@@ -1,42 +1,36 @@
 #!/bin/bash
-# Enroll an HPC user against Active Directory.
+# Enroll an HPC user for the broker / constrained-delegation design.
 #
-#   enroll_user.sh <hpc-username> <ad-sAMAccountName>
+#   enroll_user.sh <hpc-username> [ad-principal]
 #
-# Recommended model: a DEDICATED AD account per HPC user in an HPC OU
-# (e.g. hpc-jdoe) rather than the person's CAC-bound account. CAC/SCRIL
-# accounts have AD-managed random passwords that the domain can roll, which
-# would silently invalidate an escrowed keytab.
+# There are NO per-user keytabs and NO hpc-<user> shadow accounts here. The
+# broker impersonates the user's REAL AD identity via S4U, so enrollment is just:
+#   1. the user's AD account must be delegation-eligible (checked below), and
+#   2. a uidmap.conf line mapping the POSIX identity -> real AD principal.
 #
-# AD account settings (done by AD admins, once per account):
-#   - "This account supports Kerberos AES 256 bit encryption" = on
-#     (msDS-SupportedEncryptionTypes includes 0x10)
-#   - "Account is sensitive and cannot be delegated" = OFF  (TGT must be forwardable)
-#   - Not a member of "Protected Users" (that group blocks delegation and caps TGT lifetime at 4h)
-#   - Password never expires, or let krb-credd rotation (below) own it
+# The backends the user needs must already be in the broker's
+# msDS-AllowedToDelegateTo and in delegate_targets (credd.conf). See AD-SETUP.md.
 set -euo pipefail
-user="$1"; sam="$2"
-REALM="${REALM:-$(awk '$1=="default_realm"{print $3}' /etc/krb5.conf)}"
-KT="/etc/krb-hpc/keytabs/${sam}.keytab"
-install -d -m 0700 -o root -g root /etc/krb-hpc/keytabs
+user="$1"; princ="${2:-$1}"              # default: AD principal == posix name
 id "$user" >/dev/null
 
-# Option A (Linux broker, delegated OU rights): msktutil sets a random password
-# on the account and writes the keytab in one step.
-msktutil --update --use-service-account --account-name "$sam" \
-         --keytab "$KT" --enctypes 0x10 --dont-expire-password \
-         --server "${AD_DC:-dc1.example.mil}" --realm "$REALM"
+# Delegation-eligibility reminder (enforced in AD, verifiable with PowerShell):
+#   Get-ADUser <princ> -Properties AccountNotDelegated,MemberOf
+#     AccountNotDelegated must be False, and MemberOf must NOT include Protected Users.
+cat <<EOF
+NOTE: confirm in AD that '${princ}' is delegation-eligible:
+  - NOT in 'Protected Users'
+  - 'Account is sensitive and cannot be delegated' = OFF (AccountNotDelegated = False)
+  - AES256 enabled
+Otherwise S4U2Proxy for this user will fail at the KDC.
+EOF
 
-# Option B (Windows, run by an AD admin, then copy the keytab over a secure channel):
-#   ktpass /princ <sam>@<REALM> /mapuser <DOMAIN>\<sam> /crypto AES256-SHA1 ^
-#          /ptype KRB5_NT_PRINCIPAL /pass +rndPass /out <sam>.keytab
-
-chmod 0600 "$KT"
-# Verify: the escrowed key works and AD issues a forwardable, renewable TGT.
-chk=$(mktemp); trap 'rm -f "$chk"' EXIT
-kinit -f -r 7d -k -t "$KT" -c "FILE:$chk" "${sam}@${REALM}"
-flags=$(LC_ALL=C klist -f -c "FILE:$chk" | sed -n 's/.*Flags: //p' | head -1)
-[[ "$flags" == *F* ]] || echo "WARNING: TGT not forwardable (flags=$flags) -- check 'sensitive and cannot be delegated' / Protected Users"
-[[ "$flags" == *R* ]] || echo "WARNING: TGT not renewable (flags=$flags) -- check the domain Kerberos policy"
-grep -qE "^${user}[[:space:]]" /etc/krb-hpc/uidmap.conf || echo "${user}  ${sam}" >> /etc/krb-hpc/uidmap.conf
-echo "enrolled ${user} -> ${sam}@${REALM}"
+MAP=/etc/krb-hpc/uidmap.conf
+install -d -m 0755 -o root -g root "$(dirname "$MAP")"
+[ -f "$MAP" ] || { install -m 0644 -o root -g root /dev/null "$MAP"; }
+if grep -qE "^${user}[[:space:]]" "$MAP"; then
+    echo "already enrolled: $(grep -E "^${user}[[:space:]]" "$MAP")"
+else
+    printf '%s\t%s\n' "$user" "$princ" >> "$MAP"
+    echo "enrolled ${user} -> ${princ}  (uidmap updated; no restart needed)"
+fi

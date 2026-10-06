@@ -1,7 +1,9 @@
 """krbhpc -- shared-home Kerberos for a CAC / UID-GID HPC cluster.
 
-A root daemon (krb-credd) obtains each user's AD TGT from an escrowed keytab and
-writes it into the user's home directory on the shared filesystem; every compute
-node already sees it. Pure Python; MIT krb5 client tools + setpriv at runtime.
+A root daemon (krb-credd) authenticates once as a single broker service account
+and uses Kerberos constrained delegation (S4U2Self + S4U2Proxy) to mint each
+enrolled user's backend SERVICE tickets, writing them into the user's home
+directory on the shared filesystem; every compute node already sees them. No
+per-user keytabs. Pure Python; MIT krb5 client tools + setpriv at runtime.
 """
-__version__ = "1.0.0"
+__version__ = "2.0.0"

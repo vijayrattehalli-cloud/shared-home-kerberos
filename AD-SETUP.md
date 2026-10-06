@@ -1,178 +1,169 @@
-# Active Directory setup for shared-home krb-credd
+# Active Directory setup for shared-home krb-credd (constrained delegation)
 
 This is the domain-side companion to [`ARCHITECTURE.md`](ARCHITECTURE.md) and
 [`SECURITY.md`](SECURITY.md). It answers two questions directly:
 
-1. **Does every HPC user get a TGT?** — No. Only *enrolled* users do.
+1. **Does every HPC user get a ticket?** — No. Only *enrolled* users do.
 2. **How do you set up Active Directory to support this safely?**
 
-Throughout, the example realm is `CORP.EXAMPLE.MIL` and per-user service
-accounts follow the pattern `hpc-<samaccountname>` (e.g. `hpc-jdoe`).
+The example realm is `CORP.EXAMPLE.MIL`. There is exactly **one** service
+account for the whole cluster — the broker — and **no** per-user shadow
+accounts or per-user keytabs.
 
 ---
 
-## 1. Why a dedicated AD account per user (and not the user's own account)
+## 1. Why one broker account + constrained delegation
 
-The binding constraint is that the CAC on the HPC side **cannot** perform
-PKINIT/GSSAPI to obtain a TGT as the human user, yet the HPC knows users only by
-UID/GID and must reach Kerberized services in the enterprise realm. So instead
-of the user's primary AD account, each enrolled HPC user gets a **dedicated,
-purpose-built AD account** whose key is escrowed on the HPC management node as a
-keytab. `krb-credd` `kinit`s from that keytab.
+The binding constraints: the CAC cannot do PKINIT on the HPC, GSSAPI credential
+forwarding over SSH is blocked, and jobs run unattended for days. Something must
+authenticate to AD without the card and refresh forever on its own.
 
-This is a deliberate trade: a standing credential exists for each enrolled user.
-The rest of this document is about making that credential as weak and as
-contained as possible — it should be able to do exactly one thing (authenticate
-to the approved Kerberized services as a mappable identity) and nothing else.
+Escrowing a **keytab per user** would do that, but a keytab is a long-term,
+exportable key — the opposite of what CAC/PIV gives you — and N of them is a
+large credential-management and attack surface. Since AD **permits constrained
+delegation**, the better answer is a single **broker service account** that uses
+**S4U2Self + S4U2Proxy** (protocol transition + constrained delegation) to mint
+each user's service tickets on demand. This is the standard pattern for "a front
+end authenticated the user by a non-Kerberos means, and now needs Kerberos to
+specific backends."
 
-`auth_to_local` on the service side maps `hpc-jdoe@CORP.EXAMPLE.MIL` back to the
-POSIX name `jdoe`, so services see the right user. (Verified in
-`config/krb5.conf`: the `RULE` strips the `hpc-` prefix.)
+What the users get is **service tickets to the enumerated backends only** — not
+a general-purpose TGT. The broker impersonates each user's **real** AD identity,
+so `auth_to_local` maps `jdoe@CORP.EXAMPLE.MIL → jdoe` with no prefix rewriting.
 
 ---
 
-## 2. Enrollment is the gate — "not everyone gets a TGT"
+## 2. Enrollment is the gate — "not everyone gets a ticket"
 
-A user receives a ticket **only if both** of these exist:
+A user receives tickets **only if**:
 
-1. a line in `uidmap.conf` mapping their UID → `hpc-<user>` principal, **and**
-2. an escrowed keytab `keytab_dir/hpc-<user>.keytab` (root:0600).
+1. there is a line in `uidmap.conf` mapping their UID → their real AD principal, **and**
+2. their AD account is **delegation-eligible** (see §4), **and**
+3. the backends they need are in the broker's `msDS-AllowedToDelegateTo` **and** `delegate_targets`.
 
 An un-enrolled UID that connects to the socket gets `ERR uid <n> is not
-enrolled` and no ticket. Enrollment is an explicit administrative act — create
-the AD account, export the keytab, add the uidmap line — not a blanket "every
-POSIX user on the cluster." Scope it to the users and the services that actually
-need Kerberized access.
+enrolled`. Enrollment is a deliberate administrative act, scoped to the users
+and services that actually need Kerberized access — not a blanket "every POSIX
+user on the cluster."
 
 ---
 
-## 3. Step-by-step AD configuration
+## 3. The broker account
 
-### 3.1 Create an OU and a delegated enrollment identity
-```
-OU=HPC-Service-Accounts,OU=HPC,DC=corp,DC=example,DC=mil
-```
-Put every `hpc-<user>` account in this OU. Delegate to the HPC admin team (or a
-dedicated enrollment service account) **only** the rights to create/manage
-accounts *within this OU* — not domain-wide. Nothing in HPC should hold broad
-directory rights.
-
-### 3.2 Create each per-user account (AES-only, no interactive logon)
-PowerShell (run by the delegated enrollment identity):
+### 3.1 Create it (AES-only, no interactive logon)
 ```powershell
-$u = "jdoe"
-$acct = "hpc-$u"
-New-ADUser -Name $acct -SamAccountName $acct `
-  -Path "OU=HPC-Service-Accounts,OU=HPC,DC=corp,DC=example,DC=mil" `
+$broker = "hpc-broker"
+New-ADUser -Name $broker -SamAccountName $broker `
+  -Path "OU=HPC-Service,OU=HPC,DC=corp,DC=example,DC=mil" `
   -AccountPassword (Read-Host -AsSecureString "pw") -Enabled $true `
   -KerberosEncryptionType AES256 `
-  -Description "HPC escrowed Kerberos identity for $u (managed by krb-credd)"
+  -Description "HPC Kerberos broker (krb-credd); constrained delegation to DAE backends"
 
-# AES only — no RC4/DES:
-Set-ADUser $acct -Replace @{ 'msDS-SupportedEncryptionTypes' = 0x18 }  # AES128+AES256
+# Register the broker's own SPN (it must be a service to use S4U):
+setspn -S hpc-broker/hpc-mgmt.corp.example.mil $broker
 ```
 
-### 3.3 Make the account un-delegatable and sensitive
-Microsoft Guardian / site policy forbids unrestricted delegation, and this
-design does not need it — the forwardable TGT is carried by the shared home, not
-by Kerberos delegation. So lock delegation **off**:
+### 3.2 Enable constrained delegation **with protocol transition**
+Protocol transition (S4U2Self) lets the broker obtain a ticket "as the user"
+without the user's credential; constrained delegation (S4U2Proxy) restricts
+what it can then reach to an explicit SPN list.
 ```powershell
-# "Account is sensitive and cannot be delegated":
-Set-ADAccountControl $acct -AccountNotDelegated $true
+# Allowed targets = exactly the Kerberized backends jobs use:
+Set-ADUser hpc-broker -Add @{ 'msDS-AllowedToDelegateTo' = @(
+  'hive/hiveserver2.corp.example.mil',
+  'hdfs/namenode.corp.example.mil'
+)}
 
-# Add to Protected Users (forces AES, no RC4/NTLM, no delegation,
-# short TGT lifetime for this account class):
-Add-ADGroupMember -Identity "Protected Users" -Members $acct
+# "Use any authentication protocol" = protocol transition (TrustedToAuthForDelegation):
+Set-ADAccountControl hpc-broker -TrustedToAuthForDelegation $true
 ```
-> **Note on Protected Users + ticket lifetime.** Protected Users caps the TGT
-> lifetime (commonly 4 hours). `krb-credd` already renews/re-acquires well
-> inside any such window, so this is compatible — but confirm the daemon's
-> `renew_margin` is shorter than the enforced lifetime. If a site's policy
-> makes that impractical for long-queued jobs, the account can instead be left
-> out of Protected Users while **keeping** `AccountNotDelegated`, AES-only, and
-> the scoped rights below; document the choice.
+> This list is the security boundary. Keep it **minimal** — every SPN added is
+> something the broker can mint for any user. It must match `delegate_targets`
+> in `credd.conf` exactly (same SPNs, realm-qualified).
 
-### 3.4 Grant least privilege — logon to the target services only
-These accounts should authenticate to the approved Kerberized DAE/Hive/etc.
-services and do nothing else:
-- **No** membership in operational or admin groups.
-- **No** local logon rights on Windows infrastructure (deny via GPO:
-  *Deny log on locally* / *Deny log on through RDP* for the OU).
-- Grant access to each target service exactly as you would a normal user of
-  that service (e.g. the Hive/Ranger authorization that maps to `jdoe`).
-
-### 3.5 Service Principal Names
-The per-user accounts are *clients*; they normally need **no** SPN. Register
-SPNs only on the **service** accounts (Hive, HDFS, etc.), e.g.
-`hive/host.corp.example.mil@CORP.EXAMPLE.MIL`, and export those service keytabs
-to the service hosts — never to the HPC node.
-
-### 3.6 Export and escrow the keytab
-Export AES keys for the account and move the keytab to the HPC management node:
+### 3.3 Escrow the one keytab
 ```powershell
-ktpass -princ hpc-jdoe@CORP.EXAMPLE.MIL -mapUser hpc-jdoe `
-  -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL +rndPass `
-  -out hpc-jdoe.keytab
+ktpass -princ hpc-broker/hpc-mgmt.corp.example.mil@CORP.EXAMPLE.MIL `
+  -mapUser hpc-broker -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL +rndPass `
+  -out broker.keytab
 ```
-On the HPC node, place it under `keytab_dir` as `hpc-jdoe.keytab`, **root:0600**.
-The daemon refuses any keytab that is not root-owned and 0600 (see
-`SECURITY.md` §3.3). Transfer over an encrypted channel and delete the
-intermediate file from the Windows side.
+On the HPC management node, place it at `broker_keytab` (`/etc/krb-hpc/broker.keytab`),
+**root:0600**. The daemon refuses any broker keytab that is not root-owned and
+0600. Transfer over an encrypted channel and destroy the intermediate file.
 
-### 3.7 Add the uidmap line
-```
-# /etc/krb-hpc/uidmap.conf  (root:0644, not group/world writable)
-jdoe   hpc-jdoe
-# or by numeric uid:
-# 24070 hpc-jdoe
-```
-No daemon restart needed — `uidmap.conf` is re-read on mtime change.
+> **Prefer a gMSA.** A group Managed Service Account has AD auto-rotate the
+> password every 30 days, retrievable only by authorized hosts — no static key
+> on disk. It requires the broker host be domain-joined and in the gMSA's
+> `PrincipalsAllowedToRetrieveManagedPassword`. If gMSA isn't feasible, back the
+> static keytab with an HSM/KMS and rotate on a schedule (§6).
 
 ---
 
-## 4. Realm-level hardening (do this once)
+## 4. The user accounts (delegation-eligible)
 
-- **Apply the PAC-hardening updates** (KB5008380 / CVE-2021-42287 and the
-  related sAMAccountName-spoofing fixes) on all domain controllers, in
-  enforcement mode. This prevents a captured keytab from being leveraged to
-  forge a PAC for a different (e.g. privileged) account.
-- **Disable RC4/DES** realm-wide where feasible; require AES. The `hpc-*`
-  accounts are already AES-only (§3.2).
-- **Cross-realm:** if HPC and enterprise are separate realms, use a one-way
-  trust with the HPC realm trusting enterprise, AES trust keys, and a tight
-  `auth_to_local`. (This repo's default is a single realm; see
-  `ARCHITECTURE.md` for the topology discussion.)
-- **Monitoring:** alert on use of any `hpc-*` account from anywhere other than
-  the expected service hosts, on authentication failures, and on account
-  modification within the HPC OU. These accounts have a very predictable usage
-  shape, which makes anomalies easy to spot.
+Because the broker impersonates each user's **real** identity, those accounts
+must be valid S4U2Proxy targets:
 
----
+- **AES-enabled** (`msDS-SupportedEncryptionTypes ⊇ 0x18`); RC4/DES off.
+- **NOT** in **Protected Users** (that group blocks being a delegation target).
+- **NOT** flagged **"Account is sensitive and cannot be delegated"**
+  (`AccountNotDelegated = $false`).
 
-## 5. Key rotation
+> Ordinary HPC users are normally outside Protected Users (it's reserved for
+> admins), so this usually holds already. Verify for your population:
+> ```powershell
+> Get-ADUser jdoe -Properties AccountNotDelegated,MemberOf |
+>   Select-Object AccountNotDelegated,
+>     @{n='Protected';e={$_.MemberOf -match 'Protected Users'}}
+> ```
+> If any HPC users *are* privileged accounts in Protected Users, they cannot be
+> delegated; handle those out of band (they are not a fit for this design).
 
-Escrowed keys are standing credentials, so rotate them:
-- Rotate each `hpc-<user>` key on a schedule (e.g. every 30–90 days) and on any
-  suspicion of compromise or when a user offboards.
-- Rotation = re-export the keytab (`+rndPass` mints a new random key and
-  invalidates the old) and atomically replace the file under `keytab_dir`
-  (root:0600). In-flight tickets keep working until renewal; the next
-  `_acquire` uses the new key.
-- **Offboarding:** disable/delete the AD account, delete the keytab, and remove
-  the `uidmap.conf` line. Any of the three alone stops new tickets; do all
-  three.
+No per-user keytab, SPN, or password export is involved — these are the users'
+normal accounts, untouched except for the eligibility check.
 
 ---
 
-## 6. Checklist
+## 5. Backends, SPNs, and auth_to_local
 
-- [ ] Dedicated OU with delegated (not domain-wide) enrollment rights
-- [ ] `hpc-<user>` account per enrolled user, AES256, no interactive logon
-- [ ] `AccountNotDelegated = true` on every account
-- [ ] Protected Users membership (or documented exception) 
-- [ ] Least-privilege service access only; denied local/RDP logon via GPO
-- [ ] SPNs only on service accounts, service keytabs only on service hosts
-- [ ] Keytab escrowed root:0600 on the HPC node; intermediate copies destroyed
-- [ ] `uidmap.conf` line added (root:0644)
-- [ ] DC PAC-hardening updates applied in enforcement mode; RC4/DES disabled
-- [ ] Rotation + offboarding runbook in place; monitoring on `hpc-*` usage
+- Register each backend SPN (`hive/host`, `hdfs/host`, …) on its **own**
+  AES-enabled service account, and deploy those service keytabs to the service
+  hosts — **never** to the HPC node.
+- Keep the backend SPN set in `msDS-AllowedToDelegateTo` and `delegate_targets`
+  in lockstep.
+- `krb5.conf` uses `auth_to_local = DEFAULT`; service tickets already name the
+  real user (`jdoe@REALM`), so backends see `jdoe` directly. Authorization
+  (Ranger/HDFS ACLs) is applied to the real user as usual and is the second gate
+  behind delegation.
+
+---
+
+## 6. Realm hardening and rotation
+
+- **PAC-hardening updates** (KB5008380 / CVE-2021-42287 and related
+  sAMAccountName-spoofing fixes) on all DCs, in enforcement mode — so a captured
+  broker keytab cannot be leveraged to forge a PAC for a privileged account.
+- **Disable RC4/DES** realm-wide; require AES.
+- **Rotate the broker key** on a schedule (gMSA does this automatically; a
+  static keytab via `ktpass +rndPass` + atomic replace `root:0600` + daemon
+  restart). In-flight tickets keep working; the next mint uses the new key.
+- **Monitoring:** the broker account's usage is highly predictable (S4U from one
+  host to a fixed SPN set). Alert on S4U from any other host, on targets outside
+  the allow-list, and on changes to `msDS-AllowedToDelegateTo`.
+- **Offboarding a user:** remove their `uidmap.conf` line (stops minting at the
+  next refresh) and remove their backend authorization. **Revoking everyone** is
+  a single action: disable or rotate the broker account.
+
+---
+
+## 7. Checklist
+
+- [ ] One broker service account, AES256, no interactive logon, with its own SPN
+- [ ] `msDS-AllowedToDelegateTo` = exactly the backend SPNs (matches `delegate_targets`)
+- [ ] `TrustedToAuthForDelegation = $true` (protocol transition)
+- [ ] Broker keytab escrowed root:0600 (or gMSA/HSM-backed); intermediate copies destroyed
+- [ ] Every enrolled user account is AES, not in Protected Users, not sensitive-for-delegation
+- [ ] Backend SPNs on their own service accounts; service keytabs only on service hosts
+- [ ] `uidmap.conf` lines (uid/name → real AD principal), root:0644
+- [ ] DC PAC-hardening in enforcement mode; RC4/DES disabled
+- [ ] Rotation + offboarding runbook; monitoring on the broker account's S4U usage

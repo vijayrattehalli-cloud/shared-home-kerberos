@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-Hive access in pure Python over Kerberos, reading the TGT that krb-credd placed
-in the shared home ($KRB5CCNAME -> FILE:$HOME/.krb5/krb5cc_hpc).
+Hive access in pure Python over Kerberos, using the SERVICE ticket that
+krb-credd minted (by constrained delegation) into the shared home
+($KRB5CCNAME -> FILE:$HOME/.krb5/krb5cc_hpc).
+
+The cache holds the hive/_HOST service ticket directly (no TGT); GSSAPI uses the
+cached service ticket as-is. The requested service name must match the SPN of
+the minted ticket -- watch _HOST / hostname canonicalization.
 
 Why this is simpler than the Java path: Python's GSSAPI stack (via impyla/
 PyHive + pure-sasl, or requests-kerberos for HTTP) uses the FILE ccache

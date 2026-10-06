@@ -4,30 +4,41 @@ krb-credd -- Kerberos credential daemon for a CAC / UID-GID HPC cluster
 (shared-home design, pure Python).
 
 Users reach the HPC with a CAC, which cannot be used through GSSAPI/PKINIT to
-get a TGT. This root daemon obtains each enrolled user's Active Directory TGT
-from an escrowed per-user keytab and writes it into the user's home directory
-on the shared filesystem:
+get a TGT, and GSSAPI credential forwarding over SSH is blocked. Instead of an
+escrowed per-user keytab (one standing secret per user), this root daemon holds
+a SINGLE broker service-account credential and uses Kerberos constrained
+delegation to mint each enrolled user's tickets:
 
-    {home}/.krb5/krb5cc_hpc
+    1. kinit the broker's own TGT from one keytab  (renewable, unattended)
+    2. S4U2Self + S4U2Proxy (`kvno -U <user> -P <spn>...`) to obtain SERVICE
+       tickets to the allow-listed backends ON BEHALF OF the real user
+    3. write that cache into the user's home on the shared filesystem:
 
-Because home is mounted on every compute node, the ticket is already present
-cluster-wide; a one-line Slurm TaskProlog points KRB5CCNAME at it. There is no
-SPANK plugin, no KCM, and no node-side daemon.
+           {home}/.krb5/krb5cc_hpc
 
-The daemon keeps every "active" user's ticket fresh -- renewing before expiry,
-re-acquiring from the keytab past the renew limit. A user is active for
+Because home is mounted on every compute node, the tickets are already present
+cluster-wide; a one-line Slurm TaskProlog points KRB5CCNAME at the cache. There
+is no SPANK plugin, no KCM, no node-side daemon, and NO per-user keytab.
+
+What the user gets is service tickets to the enumerated backends only -- NOT a
+general-purpose TGT (there is no approved way to do initial auth as the user on
+HPC, and S4U is least-privilege by design). Every Kerberized backend a job
+touches must be listed in `delegate_targets` and in the broker account's
+msDS-AllowedToDelegateTo in AD.
+
+The daemon keeps every "active" user's tickets fresh by RE-MINTING before
+expiry (service tickets cannot be renewed); the broker's own TGT is what
+renews/re-acquires unattended from the keytab. A user is active for
 `active_window` after a `krb-get`, and for as long as they have a pending or
-running Slurm job (squeue), so a job that waits in the queue or runs for days
-never finds an expired ticket.
+running Slurm job (squeue), so a long-queued or multi-day job never finds an
+expired ticket.
 
 Front door: a UNIX-domain socket. The caller's UID comes from the kernel
 (SO_PEERCRED), never from the request, so a user can only ever obtain their own
-ticket, and only if enrolled.
+tickets, and only if enrolled.
 
-Dependencies: python3 stdlib, MIT krb5 client tools (kinit, klist),
+Dependencies: python3 stdlib, MIT krb5 client tools (kinit, klist, kvno),
 util-linux setpriv, and the Slurm client (squeue) when watch_slurm is on.
-Unlike the Java edition, nothing here serializes ccaches by hand -- MIT kinit
-writes a native FILE cache directly.
 """
 from __future__ import annotations
 
@@ -79,15 +90,18 @@ def _assert_secure(path: Path, *, is_dir: bool, label: str, strict: bool = False
 class Config:
     realm: str
     krb5_conf: str
-    keytab_dir: Path
+    broker_principal: str
+    broker_keytab: Path
+    broker_ccache: Path
+    delegate_targets: list[str]   # concrete backend SPNs (S4U2Proxy allow-list)
     state_dir: Path
     map_file: Path
     unix_socket: Path
     ccache_path: str          # tokens: {home} {uid} {user}
     install_helper: str
     setpriv: str
-    ticket_lifetime: str
-    renew_lifetime: str
+    broker_lifetime: str
+    broker_renew: str
     renew_margin_s: int
     refresh_interval_s: int
     active_window_s: int
@@ -102,10 +116,19 @@ class Config:
         cp = configparser.ConfigParser(inline_comment_prefixes=(";", "#"))
         cp.read(path)
         s = cp["broker"]
+        realm = s.get("realm")
+        targets = [t for t in s.get("delegate_targets", "").replace(",", " ").split()]
+        if not targets:
+            raise ValueError("delegate_targets must list at least one backend SPN")
+        # Qualify any bare SPN with the realm so AD/auth all agree on the name.
+        targets = [t if "@" in t else f"{t}@{realm}" for t in targets]
         return Config(
-            realm=s.get("realm"),
+            realm=realm,
             krb5_conf=s.get("krb5_conf", "/etc/krb5.conf"),
-            keytab_dir=Path(s.get("keytab_dir", "/etc/krb-hpc/keytabs")),
+            broker_principal=s.get("broker_principal"),
+            broker_keytab=Path(s.get("broker_keytab", "/etc/krb-hpc/broker.keytab")),
+            broker_ccache=Path(s.get("broker_ccache", "/var/lib/krb-hpc/broker.cc")),
+            delegate_targets=targets,
             state_dir=Path(s.get("state_dir", "/var/lib/krb-hpc/ccache")),
             map_file=Path(s.get("map_file", "/etc/krb-hpc/uidmap.conf")),
             unix_socket=Path(s.get("unix_socket", "/run/krb-hpc/credd.sock")),
@@ -113,9 +136,9 @@ class Config:
             install_helper=s.get("install_helper",
                                  "/usr/local/libexec/krb-hpc/krb-install-ccache"),
             setpriv=s.get("setpriv", "/usr/bin/setpriv"),
-            ticket_lifetime=s.get("ticket_lifetime", "10h"),
-            renew_lifetime=s.get("renew_lifetime", "7d"),
-            renew_margin_s=duration_seconds(s.get("renew_margin", "2h")),
+            broker_lifetime=s.get("broker_lifetime", "10h"),
+            broker_renew=s.get("broker_renew", "7d"),
+            renew_margin_s=duration_seconds(s.get("renew_margin", "1h")),
             refresh_interval_s=duration_seconds(s.get("refresh_interval", "5m")),
             active_window_s=duration_seconds(s.get("active_window", "7d")),
             watch_slurm=s.getboolean("watch_slurm", True),
@@ -125,7 +148,14 @@ class Config:
 
 
 class UidMap:
-    """uidmap.conf: '<username-or-uid>  <AD sAMAccountName or principal>'.
+    """uidmap.conf: '<username-or-uid>  <REAL AD user principal>'.
+
+    With constrained delegation the daemon impersonates the user's own AD
+    identity (e.g. jdoe@CORP.EXAMPLE.MIL), so the right-hand column is the
+    user's real sAMAccountName/UPN -- NOT an hpc-<user> shadow account. The
+    account must be delegation-eligible (not in Protected Users, not flagged
+    'sensitive -- cannot be delegated').
+
     Re-read on mtime change (enrollment needs no restart). Rejected unless the
     file is root-owned and not group/world writable."""
 
@@ -153,7 +183,10 @@ class UidMap:
                     except KeyError:
                         log.warning("uidmap: unknown user %s", who)
                         continue
-                    m[u] = princ if "@" in princ else f"{princ}@{self.realm}"
+                    # Store the principal as written. For S4U2Self the KDC
+                    # resolves a bare name in the default realm (same-realm AD);
+                    # a cross-realm user is written fully-qualified (user@OTHER).
+                    m[u] = princ
                 self._map, self._mtime = m, st.st_mtime
                 log.info("uid map loaded: %d entries", len(m))
             return self._map.get(uid)
@@ -165,11 +198,13 @@ class TicketManager:
         self.krb = Krb5(cfg.krb5_conf)
         self._locks: dict[int, threading.Lock] = {}
         self._glock = threading.Lock()
+        self._broker_lock = threading.Lock()
         self._active: dict[int, float] = {}
         self._last_install: dict[int, float] = {}
-        # The escrowed keytabs are the crown jewels: refuse to run if their
-        # directory is not root-owned and locked down.
-        _assert_secure(cfg.keytab_dir, is_dir=True, label="keytab_dir")
+        # The broker keytab is the single crown jewel: refuse to run unless it
+        # is a root-owned, non-symlink, mode-0600 regular file.
+        _assert_secure(cfg.broker_keytab, is_dir=False, label="broker_keytab",
+                       strict=True)
         cfg.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(cfg.state_dir, 0o700)
         _assert_secure(cfg.state_dir, is_dir=True, label="state_dir")
@@ -185,33 +220,37 @@ class TicketManager:
         return Path(self.cfg.ccache_path.format(
             home=pw.pw_dir, uid=pw.pw_uid, user=pw.pw_name))
 
-    def keytab(self, principal: str) -> Path:
-        safe = principal.split("@")[0].replace("/", "_")
-        return self.cfg.keytab_dir / f"{safe}.keytab"
+    def _ensure_broker(self) -> None:
+        """Keep the broker's own TGT fresh -- this is the unattended-renewal
+        engine. Renew while possible, otherwise re-kinit from the one keytab.
+        Everything the daemon mints for users rides on this single credential."""
+        with self._broker_lock:
+            cc = self.cfg.broker_ccache
+            t = self.krb.klist_times(str(cc))
+            now = time.time()
+            if t is not None and t.expires - now >= self.cfg.renew_margin_s:
+                return  # still good
+            if t is not None and t.renew_until - now > self.cfg.renew_margin_s \
+                    and self.krb.kinit_renew(str(cc)):
+                log.info("renewed broker TGT")
+                return
+            tmp = cc.with_suffix(".new")
+            self.krb.kinit_keytab(self.cfg.broker_principal,
+                                  str(self.cfg.broker_keytab), str(tmp),
+                                  self.cfg.broker_lifetime, self.cfg.broker_renew)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, cc)
+            log.info("acquired broker TGT principal=%s", self.cfg.broker_principal)
 
-    def _acquire(self, principal: str, cc: Path) -> None:
-        kt = self.keytab(principal)
-        if not kt.exists():
-            raise FileNotFoundError(f"no escrowed keytab for {principal}")
-        # The keytab holds the user's long-term key: require root:0600 and a
-        # regular (non-symlink) file before we trust it to kinit.
-        _assert_secure(kt, is_dir=False, label="keytab", strict=True)
+    def _mint(self, principal: str, cc: Path) -> None:
+        """Mint the user's service tickets via constrained delegation (no TGT)
+        into `cc`, atomically. Relies on the broker TGT being fresh."""
+        self._ensure_broker()
         tmp = cc.with_suffix(".new")
-        self.krb.kinit_keytab(principal, str(kt), str(tmp),
-                              self.cfg.ticket_lifetime, self.cfg.renew_lifetime)
+        self.krb.s4u_mint(str(self.cfg.broker_ccache), principal,
+                          self.cfg.delegate_targets, str(tmp))
         os.chmod(tmp, 0o600)
         os.replace(tmp, cc)  # atomic
-
-    def _renew(self, cc: Path) -> bool:
-        tmp = cc.with_suffix(".new")
-        import shutil
-        shutil.copy2(cc, tmp)
-        if not self.krb.kinit_renew(str(tmp)):
-            tmp.unlink(missing_ok=True)
-            return False
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, cc)
-        return True
 
     def _install(self, pw: pwd.struct_passwd, src: Path) -> Path:
         """Copy the master ccache into the user's home, running AS THE USER
@@ -245,19 +284,14 @@ class TicketManager:
             lock = self._locks.setdefault(uid, threading.Lock())
         with lock:
             changed = False
-            t = self.krb.klist_times(str(cc))
+            exp = self.krb.cache_expiry(str(cc))
             now = time.time()
-            if t is None:
-                self._acquire(principal, cc)
+            # Service tickets can't be "renewed" -- re-mint them when missing or
+            # within the margin of the earliest expiry.
+            if exp is None or exp - now < self.cfg.renew_margin_s:
+                self._mint(principal, cc)
                 changed = True
-                log.info("acquired TGT uid=%d principal=%s", uid, principal)
-            elif t.expires - now < self.cfg.renew_margin_s:
-                if t.renew_until - now > self.cfg.renew_margin_s and self._renew(cc):
-                    log.info("renewed TGT uid=%d", uid)
-                else:
-                    self._acquire(principal, cc)
-                    log.info("re-acquired TGT uid=%d (past renew limit)", uid)
-                changed = True
+                log.info("minted service tickets uid=%d principal=%s", uid, principal)
             dest = self.home_ccache(pw)
             if changed or force_install:
                 dest = self._install(pw, cc)
@@ -323,7 +357,7 @@ class Handler(socketserver.StreamRequestHandler):
                 path = tm.ensure(uid, force_install=tm.due_for_install(uid))
                 tm.touch(uid)
                 self.wfile.write(f"OK {path}\n".encode())
-                log.info("issued TGT uid=%d -> %s", uid, path)
+                log.info("issued tickets uid=%d -> %s", uid, path)
             except PermissionError as e:
                 self.wfile.write(f"ERR {e}\n".encode())
                 log.warning("denied uid=%d: %s", uid, e)
@@ -351,6 +385,13 @@ def main(argv: list[str] | None = None) -> None:
     os.umask(0o077)
     cfg = Config.load(args.config)
     tm = TicketManager(cfg, UidMap(cfg.map_file, cfg.realm))
+    # Acquire the broker TGT up front so a bad keytab/principal fails fast; a
+    # transient KDC hiccup is non-fatal (the refresh loop and first request
+    # retry).
+    try:
+        tm._ensure_broker()
+    except Exception as e:
+        log.warning("initial broker kinit failed (will retry): %s", e)
     stop = threading.Event()
     threading.Thread(target=tm.refresh_loop, args=(stop,), daemon=True).start()
     cfg.unix_socket.parent.mkdir(parents=True, exist_ok=True)
@@ -359,8 +400,10 @@ def main(argv: list[str] | None = None) -> None:
     os.chmod(cfg.unix_socket, 0o666)  # anyone may connect; SO_PEERCRED decides whose ticket
     srv.tm = tm
     srv.sem = threading.BoundedSemaphore(MAX_CLIENTS)
-    log.info("listening on %s (shared-home; refresh %ds; slurm-watch=%s)",
-             cfg.unix_socket, cfg.refresh_interval_s, cfg.watch_slurm)
+    log.info("listening on %s (shared-home S4U; broker=%s; targets=%s; "
+             "refresh %ds; slurm-watch=%s)", cfg.unix_socket,
+             cfg.broker_principal, ",".join(cfg.delegate_targets),
+             cfg.refresh_interval_s, cfg.watch_slurm)
     try:
         srv.serve_forever()
     finally:

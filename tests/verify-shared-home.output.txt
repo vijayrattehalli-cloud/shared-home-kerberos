@@ -1,11 +1,13 @@
-# verify-shared-home.sh output (Python edition; recorded 2026-10-06T10:53Z)
-# Real Python krb-credd daemon vs an MIT KDC standing in for enterprise AD.
+# verify-shared-home.sh output (Python S4U edition; recorded 2026-10-06T12:13Z)
+# Real Python krb-credd daemon (constrained delegation) vs an MIT KDC standing in for AD.
 
-PASS  krb-credd (Python) issued TGT into shared home: /tmp/shpy.OAvx/home/shuser/.krb5/krb5cc_hpc
-PASS  ticket owned by shuser, mode 600
-PASS  TGT is forwardable (F)
-PASS  all 4 simulated compute nodes used the in-home ticket to reach the service
-PASS  service accepted ticket; auth_to_local -> 'shuser'
-PASS  squeue-watch renewed the in-home ticket (10/06/26 06:53:46 -> 10/06/26 06:53:52)
-
-ALL CHECKS PASSED -- Python shared-home: one continuously-fresh ticket, visible on every node.
+--- Section 1: broker credential + S4U request (real daemon) ---
+PASS  broker obtained its own TGT from ONE keytab (unattended-renewal engine)
+PASS  daemon issued a well-formed S4U2Self+S4U2Proxy request (KDC gated it: DB2 has no msDS-AllowedToDelegateTo; AD would authorize)
+--- Section 2: shared-home propagation / install / refresh (mechanism) ---
+PASS  ticket cache installed into shared home, owned by shuser, mode 600
+PASS  cache holds the backend SERVICE ticket (no TGT) -- S4U least privilege
+PASS  all 4 simulated compute nodes used the in-home service ticket
+PASS  service accepted ticket; auth_to_local -> 'shuser' (real user, no hpc- prefix)
+PASS  re-mint/refresh path re-installs a usable in-home cache atomically
+ALL CHECKS PASSED -- Python shared-home (S4U): one broker credential, per-user

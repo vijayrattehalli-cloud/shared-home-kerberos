@@ -55,6 +55,24 @@ def parse_klist(output: str) -> TgtTimes | None:
     return None
 
 
+def earliest_expiry(output: str) -> float | None:
+    """Earliest 'Expires' across ALL tickets in `klist` output (service-ticket
+    cache; there is no TGT). Returns epoch seconds, or None if no ticket line
+    parses. Used to decide when to re-mint a user's service tickets."""
+    earliest: float | None = None
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or "/" not in parts[-1]:
+            continue
+        try:
+            exp = _parse_klist_time(parts[2], parts[3])
+        except (ValueError, IndexError):
+            continue
+        if earliest is None or exp < earliest:
+            earliest = exp
+    return earliest
+
+
 class Krb5:
     """Thin wrapper over kinit/klist with a pinned config and C locale."""
 
@@ -87,8 +105,16 @@ class Krb5:
             return None
         return parse_klist(r.stdout)
 
+    def cache_expiry(self, ccache: str) -> float | None:
+        """Earliest expiry across all (service) tickets in a cache, or None."""
+        r = self.run("klist", "-c", f"FILE:{ccache}")
+        if r.returncode != 0:
+            return None
+        return earliest_expiry(r.stdout)
+
     def kinit_keytab(self, principal: str, keytab: str, ccache: str,
                      lifetime: str, renew_lifetime: str) -> None:
+        """Get the BROKER's own forwardable, renewable TGT from its keytab."""
         r = self.run("kinit", "-f", "-r", renew_lifetime, "-l", lifetime,
                      "-k", "-t", keytab, "-c", f"FILE:{ccache}", principal)
         if r.returncode != 0:
@@ -97,3 +123,20 @@ class Krb5:
     def kinit_renew(self, ccache: str) -> bool:
         r = self.run("kinit", "-R", "-c", f"FILE:{ccache}")
         return r.returncode == 0
+
+    def s4u_mint(self, broker_ccache: str, for_user: str, targets: list[str],
+                 out_ccache: str) -> None:
+        """Constrained delegation: using the broker's TGT in `broker_ccache`,
+        obtain SERVICE tickets to each SPN in `targets` on behalf of `for_user`
+        (S4U2Self + S4U2Proxy, i.e. `kvno -U <user> -P ...`) and write them to
+        `out_ccache`. No TGT is produced -- only tickets to the allow-listed
+        backends. Requires AD's msDS-AllowedToDelegateTo (or an LDAP-backed MIT
+        KDC) to authorize the proxy leg; a file/DB2 KDC cannot store the list
+        and returns 'constrained delegation failed'."""
+        r = self.run("kvno", "-c", f"FILE:{broker_ccache}",
+                     "--out-cache", f"FILE:{out_ccache}",
+                     "-U", for_user, "-P", *targets)
+        if r.returncode != 0:
+            msg = (r.stderr.strip() or r.stdout.strip() or "unknown error")
+            raise RuntimeError(
+                f"S4U mint failed for {for_user} -> {targets}: {msg}")
