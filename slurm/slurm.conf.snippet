@@ -1,0 +1,6 @@
+# --- krb-hpc (Java 24 solution) additions to slurm.conf ---
+TaskProlog=/etc/slurm/taskprolog.krb.sh
+# optional, diagnostics only:
+# PrologFlags=Alloc
+# Prolog=/etc/slurm/prolog.d/*
+# No SPANK plugin and no node daemon: the shared home directory carries the ticket.

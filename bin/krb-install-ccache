@@ -1,0 +1,19 @@
+#!/bin/sh
+# krb-install-ccache DEST
+# Invoked by krb-credd through `setpriv --reuid=<user>`: runs WITH THE USER'S
+# identity, so it works on root-squashed NFS/GPFS/Lustre home directories and
+# can never write anywhere the user could not. Reads a ccache on stdin and
+# installs it atomically at DEST (dir 0700, file 0600).
+set -eu
+umask 077
+dest="$1"
+dir=$(dirname -- "$dest")
+mkdir -p -- "$dir"
+chmod 700 -- "$dir"
+tmp=$(mktemp "$dir/.krb5cc.XXXXXX")
+trap 'rm -f -- "$tmp"' EXIT
+cat > "$tmp"
+[ -s "$tmp" ] || { echo "empty ccache" >&2; exit 1; }
+chmod 600 -- "$tmp"
+mv -f -- "$tmp" "$dest"      # rename(2): readers on any node see old or new, never partial
+trap - EXIT

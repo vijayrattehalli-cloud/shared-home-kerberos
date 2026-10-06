@@ -1,0 +1,5 @@
+#!/bin/sh
+# krb-get -- refresh your TGT in ~/.krb5 and print the KRB5CCNAME export.
+#   eval "$(krb-get)"
+exec /usr/lib/jvm/java-24/bin/java -XX:TieredStopAtLevel=1 -Xshare:auto \
+     -cp /opt/krb-hpc/krb-credd.jar hpc.krb.KrbGet "$@"

@@ -1,0 +1,23 @@
+[Unit]
+Description=Kerberos credential daemon for HPC (krb-credd, Java 24)
+After=network-online.target remote-fs.target
+Wants=network-online.target
+
+[Service]
+Environment=JAVA_HOME=/usr/lib/jvm/java-24
+ExecStart=/usr/lib/jvm/java-24/bin/java -XX:+UseSerialGC -Xmx256m \
+    -Djava.security.krb5.conf=/etc/krb5.conf \
+    -jar /opt/krb-hpc/krb-credd.jar /etc/krb-hpc/credd.properties
+Restart=on-failure
+User=root
+RuntimeDirectory=krb-hpc
+UMask=0077
+ProtectSystem=strict
+# the setpriv child writes into home directories: list your home roots here
+ReadWritePaths=/run/krb-hpc /home
+PrivateTmp=true
+# setpriv needs CAP_SETUID/SETGID to act as the user when writing their ccache
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_DAC_READ_SEARCH
+
+[Install]
+WantedBy=multi-user.target

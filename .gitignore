@@ -1,0 +1,12 @@
+# build artifacts
+daemon/out/
+daemon/krb-credd.jar
+hive-jdbc/out/
+hive-jdbc/hpc-hive-krb24.jar
+hive-jdbc/shim/out/
+hive-jdbc/shim/hive-jdbc-jdk24-shim.jar
+**/__pycache__/
+*.pyc
+*.class
+# local test scratch
+/tmp/
