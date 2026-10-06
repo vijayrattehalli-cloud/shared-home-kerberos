@@ -156,6 +156,60 @@ sbatch job.sh
 
 No step copies or forwards the ticket; every node reads the same file.
 
+### 4.2.1 How the Slurm job gets its initial TGT
+
+A common misconception: the job does **not** obtain a TGT. There is no `kinit`,
+no PKINIT, and no Kerberos initial authentication inside the job. The job
+*inherits* a TGT that `krb-credd` obtained earlier, out-of-band.
+
+**Who obtains it, and how.** `krb-credd` (root, login/broker tier) does the
+initial authentication to AD on the user's behalf with the escrowed keytab —
+this is the only place a TGT is minted:
+
+```
+kinit -f -r 7d -l 10h -k -t /etc/krb-hpc/keytabs/hpc-jdoe.keytab \
+      -c FILE:<master> hpc-jdoe@CORP.EXAMPLE.MIL        # TicketManager._acquire
+```
+
+`kinit` writes a native FILE ccache, which the daemon installs into the user's
+shared home as the user (`setpriv` → `krb-install-ccache`):
+`$HOME/.krb5/krb5cc_hpc`.
+
+**Two independent triggers** ensure the ticket exists by the time the job runs,
+whether or not the user is at a shell:
+
+1. **Interactive login** — `/etc/profile.d/krb-hpc.sh` runs `krb-get`, which
+   asks `krb-credd` to issue/refresh the ticket.
+2. **The daemon's Slurm watch** — each refresh cycle `krb-credd` runs
+   `squeue -h -a -t PD,CF,R,CG -o %U` (`TicketManager._slurm_uids`) and calls
+   `ensure(uid)` for **every user with a pending/configuring/running/completing
+   job**. `ensure()` acquires from the keytab if no ticket exists yet.
+
+Trigger (2) is what answers "how does the job get its ticket": the moment the
+job appears in the queue, the daemon sees the UID and mints the TGT from the
+keytab — so even a job submitted non-interactively (cron, a script, no login)
+gets one, provided the user is enrolled.
+
+**The only job-time step** is the TaskProlog pointing the task at that existing
+ticket (it runs as the user, before each task, on every node):
+
+```bash
+cc="${HOME}/.krb5/krb5cc_hpc"
+[[ -s "$cc" ]] && echo "export KRB5CCNAME=FILE:${cc}"     # Slurm injects this into the task env
+```
+
+**During the job**, the same `squeue` watch keeps the in-home ticket renewed
+(`kinit -R`) and re-acquires from the keytab past the renew limit, so it never
+expires mid-run. Only after all this does the job *use* the TGT: the client's
+GSSAPI layer reads `KRB5CCNAME` and requests **service tickets**
+(`hive/_HOST@REALM`, …) on demand — those are service tickets, not the TGT,
+which was already in hand.
+
+> In one line: the job's "initial TGT" is obtained before and outside the job by
+> `krb-credd`'s keytab `kinit` to AD — triggered by the user's login or by the
+> job appearing in `squeue` — deposited in shared home, and merely pointed-to by
+> the TaskProlog. The job performs no Kerberos initial authentication itself.
+
 ### 4.3 Hive on the client (Python)
 
 ```
