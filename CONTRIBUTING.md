@@ -1,23 +1,30 @@
 # Contributing
 
-## Build
+## Layout
+- `src/krbhpc/` — the Python package (daemon, client, install helper, Hive client, helpers)
+- `bin/` — runnable wrappers (also installed as console scripts via `pip install .`)
+- `config/`, `slurm/`, `systemd/`, `admin/` — deployment assets
+- `tests/` — unit tests (`test_krb_helpers.py`) and the end-to-end `verify-shared-home.sh`
+
+## Install / run
 ```bash
-JAVA_HOME=/path/to/jdk24 daemon/build.sh        # produces daemon/krb-credd.jar
-JAVA_HOME=/path/to/jdk24 hive-jdbc/build.sh <hive-jdbc-standalone.jar>
+pip install .            # console scripts: krb-credd, krb-get, krb-install-ccache
+pip install '.[hive]'    # + impyla for the Python Hive client
+# or run from the repo without installing:
+bin/krb-credd -c /etc/krb-hpc/credd.conf
 ```
 
 ## Test
 ```bash
-JAVA_HOME=/path/to/jdk24 sudo -E tests/verify-shared-home.sh
+python3 tests/test_krb_helpers.py                 # pure-function unit tests, no Kerberos
+sudo -E tests/verify-shared-home.sh               # end-to-end; needs MIT krb5 tools + root
 ```
-Requires MIT krb5 server+client tools on PATH. The test stands up a throwaway
-MIT realm; it touches nothing outside its temp dir and a transient test user.
+The end-to-end test stands up a throwaway MIT realm and runs the real daemon;
+it touches nothing outside its temp dir and a transient test user.
 
-## Scope
-This repository is the **shared-home** Kerberos design only. Please keep PRs
-focused on that design; alternative forwarding mechanisms (KCM/SPANK, cross-realm)
-are intentionally out of scope here.
-
-## Style
-- Java: standard JDK 24, public APIs only (no `--add-exports`), no third-party deps.
-- Shell: `bash -n` clean; POSIX where practical.
+## Scope & style
+- This repo is the **shared-home** design only. Keep PRs focused on it;
+  KCM/SPANK and cross-realm forwarding are intentionally out of scope.
+- Python: standard library only for the daemon/client/helper (impyla is an
+  optional extra, used solely by the Hive client). Target `python3 >= 3.9`.
+- Shell (Slurm hooks, admin): `bash -n` clean.

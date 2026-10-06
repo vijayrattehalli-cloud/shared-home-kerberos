@@ -1,19 +1,39 @@
-#!/bin/sh
-# krb-install-ccache DEST
-# Invoked by krb-credd through `setpriv --reuid=<user>`: runs WITH THE USER'S
-# identity, so it works on root-squashed NFS/GPFS/Lustre home directories and
-# can never write anywhere the user could not. Reads a ccache on stdin and
-# installs it atomically at DEST (dir 0700, file 0600).
-set -eu
-umask 077
-dest="$1"
-dir=$(dirname -- "$dest")
-mkdir -p -- "$dir"
-chmod 700 -- "$dir"
-tmp=$(mktemp "$dir/.krb5cc.XXXXXX")
-trap 'rm -f -- "$tmp"' EXIT
-cat > "$tmp"
-[ -s "$tmp" ] || { echo "empty ccache" >&2; exit 1; }
-chmod 600 -- "$tmp"
-mv -f -- "$tmp" "$dest"      # rename(2): readers on any node see old or new, never partial
-trap - EXIT
+#!/usr/bin/env python3
+"""krb-install-ccache DEST  (self-contained; invoked via setpriv as the user).
+
+Reads a ccache on stdin and installs it atomically at DEST (parent 0700, file
+0600). Self-contained on purpose: the daemon runs this from a libexec path
+far from the krbhpc package, so it imports nothing beyond the stdlib.
+"""
+import os, sys, tempfile
+
+
+def main():
+    if len(sys.argv) != 2:
+        print("usage: krb-install-ccache DEST", file=sys.stderr); return 2
+    dest = sys.argv[1]
+    data = sys.stdin.buffer.read()
+    if not data:
+        print("krb-install-ccache: empty ccache on stdin", file=sys.stderr); return 1
+    os.umask(0o077)
+    d = os.path.dirname(dest) or "."
+    os.makedirs(d, exist_ok=True)
+    try:
+        os.chmod(d, 0o700)
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".krb5cc.")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, dest)
+    except BaseException:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

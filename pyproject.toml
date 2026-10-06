@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "krbhpc-shared-home"
+version = "1.0.0"
+description = "Shared-home Kerberos for a CAC / UID-GID HPC cluster (pure Python)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "krb-hpc contributors" }]
+dependencies = []                      # stdlib only; MIT krb5 + setpriv are system tools
+
+[project.optional-dependencies]
+hive = ["impyla[kerberos]>=0.18"]      # only for the Python Hive client
+dev  = ["pytest>=7"]
+
+[project.scripts]
+krb-credd = "krbhpc.credd:main"
+krb-get = "krbhpc.get:main"
+krb-install-ccache = "krbhpc.install_ccache:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

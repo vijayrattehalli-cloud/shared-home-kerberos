@@ -68,16 +68,16 @@ maximum simplicity — and its defining trade-off (§8).
 
 ```
  login/broker tier                         shared filesystem            compute fabric
- ┌───────────────────────┐                 ┌───────────────────┐        ┌──────────────┐
- │ krb-credd (root, JDK24)│── writes as ──▶ │ $HOME/.krb5/      │ ◀─mnt─ │ cn001..cnNNN │
- │  ├ Accounts (uidmap)   │   the user      │   krb5cc_hpc      │        │ TaskProlog   │
- │  ├ TicketManager       │   (setpriv)     │  (0700 dir,       │        │  sets        │
- │  │   acquire/renew/    │                 │   0600 file)      │        │  KRB5CCNAME  │
- │  │   install           │                 └───────────────────┘        └──────────────┘
- │  ├ CCacheWriter        │                          ▲
- │  └ UNIX socket (GET)   │                          │ every task reads the same file
- │ krb-get (user cmd)     │                          ▼
- └───────────────────────┘                  Hive / HDFS (AD-homed services)
+ ┌────────────────────────┐                ┌───────────────────┐        ┌──────────────┐
+ │ krb-credd (root, Python)│── writes as ─▶ │ $HOME/.krb5/      │ ◀─mnt─ │ cn001..cnNNN │
+ │  ├ UidMap (uidmap)      │   the user     │   krb5cc_hpc      │        │ TaskProlog   │
+ │  ├ TicketManager        │   (setpriv)    │  (0700 dir,       │        │  sets        │
+ │  │   acquire/renew/     │                │   0600 file)      │        │  KRB5CCNAME  │
+ │  │   install            │                └───────────────────┘        └──────────────┘
+ │  ├ Krb5 (kinit/klist)   │                         ▲
+ │  └ UNIX socket (GET)    │                         │ every task reads the same file
+ │ krb-get (user cmd)      │                         ▼
+ └────────────────────────┘                 Hive / HDFS (AD-homed services)
 ```
 
 | Component | Runs as | Responsibility |
@@ -86,35 +86,35 @@ maximum simplicity — and its defining trade-off (§8).
 | `krb-get` (`bin/`) | the user | ask the daemon (over its UNIX socket) to refresh the ticket now; print the `KRB5CCNAME` export |
 | `krb-install-ccache` (`bin/`) | **the user** (via `setpriv`) | atomically write the ticket bytes into `$HOME` with correct ownership/mode |
 | `TaskProlog` (`slurm/`) | the user, per task | export `KRB5CCNAME` pointing at the home ticket |
-| Hive JDBC client + shim (`hive-jdbc/`) | the user, in the job | authenticate to Hive from the FILE ccache on JDK 24 |
+| Hive client (`src/krbhpc/hive_client.py`) | the user, in the job | authenticate to Hive from the FILE ccache via Python GSSAPI (impyla) |
 | `enroll/rotate/revoke` (`admin/`) | admin | AD account lifecycle and key rotation |
 
-### 3.1 `krb-credd` internals (by source file)
+### 3.1 `krb-credd` internals (by module)
 
-- **`KrbCredd.java`** — process entry point. Opens a UNIX-domain `ServerSocket`
-  (`java.net`), reads the peer's kernel-verified identity via
-  `jdk.net.ExtendedSocketOptions.SO_PEERCRED`, dispatches each connection on a
-  **virtual thread**, and schedules the periodic refresh pass. Runs with **no
-  Security Manager** (JEP 486 removed it in JDK 24); nothing here needs it.
-- **`TicketManager.java`** — the credential lifecycle:
-  - *acquire* — a JAAS `Krb5LoginModule` login using the user's keytab
-    (`useKeyTab=true`, `storeKey=false`, `isInitiator=true`), yielding a
-    forwardable, renewable `KerberosTicket`.
-  - *renew* — `KerberosTicket.refresh()` while inside the renew window;
-    re-acquire from the keytab once past `renewTill`.
-  - *install* — serialize via `CCacheWriter` and hand the bytes to
-    `krb-install-ccache` under `setpriv --reuid=<uid> --regid=<gid>
-    --init-groups`, so the write happens with the user's identity.
-- **`CCacheWriter.java`** — serializes the `KerberosTicket` to the **MIT FILE
-  credential-cache format** (§5) using only public JDK APIs. This avoids
-  `--add-exports` into `sun.security.krb5.*`, so the daemon is robust across JDK
-  updates.
-- **`Accounts.java`** — `getent passwd` lookups and the `uidmap.conf`
-  (UID/username → AD principal) map, re-read on mtime change (enrollment needs
-  no restart). Enforces that `uidmap.conf` is root-owned and not group/world
-  writable.
-- **`Config.java` / `Log.java` / `KrbGet.java`** — configuration parsing,
-  logging, and the user-facing `krb-get` client.
+- **`credd.py`** — process entry point and request handling. A
+  `socketserver.ThreadingMixIn` UNIX-domain server reads the peer's
+  kernel-verified identity with `getsockopt(SO_PEERCRED)`; a background thread
+  runs the periodic refresh pass. Standard library only; no third-party deps.
+- **`credd.TicketManager`** — the credential lifecycle:
+  - *acquire* — `kinit -f -r <renew> -l <life> -k -t <keytab> -c FILE:<tmp>
+    <principal>`, which **writes a native MIT FILE ccache directly** (the Java
+    edition's `CCacheWriter` is unnecessary — there is nothing to serialize).
+  - *renew* — `kinit -R` while inside the renew window; re-acquire from the
+    keytab once past the renew limit.
+  - *install* — hand the ccache bytes to `krb-install-ccache` under
+    `setpriv --reuid=<uid> --regid=<gid> --init-groups`, so the write happens
+    with the user's identity (root-squash-safe). Every write is a temp file +
+    atomic `os.replace`.
+- **`credd.UidMap`** — the `uidmap.conf` (UID/username → AD principal) map,
+  re-read on mtime change (enrollment needs no restart). Refuses to load the
+  file unless it is root-owned and not group/world writable.
+- **`_krb.py`** — `duration_seconds`, `klist` output parsing (`parse_klist`),
+  and thin `kinit`/`klist` wrappers that pin `KRB5_CONFIG` and `LC_ALL=C` (so
+  date parsing is stable). These pure functions are unit-tested in
+  `tests/test_krb_helpers.py`.
+- **`get.py` / `install_ccache.py`** — the `krb-get` client and the self-
+  contained install helper (the helper imports nothing beyond the stdlib,
+  because the daemon runs it from a libexec path far from the package).
 
 ### 3.2 Freshness: why tickets never expire mid-job
 
@@ -135,10 +135,9 @@ renew horizon, therefore still finds a valid ticket in `$HOME`.
 user ── CAC ──▶ sshd/PAM (login01)         [OS login; UID established]
   login shell sources /etc/profile.d/krb-hpc.sh
     └▶ krb-get ──unix socket(GET)──▶ krb-credd
-                                      Accounts.principal(uid) → hpc-jdoe@REALM
+                                      UidMap.principal(uid) → hpc-jdoe@REALM
                                       TicketManager.ensure():
-                                        acquire via keytab (or renew)
-                                        CCacheWriter → bytes
+                                        kinit -k -t keytab (or kinit -R)  → native FILE ccache
                                         setpriv(uid) krb-install-ccache → $HOME/.krb5/krb5cc_hpc
     ◀── "export KRB5CCNAME=FILE:$HOME/.krb5/krb5cc_hpc"
   shell now has a working AD TGT
@@ -157,26 +156,30 @@ sbatch job.sh
 
 No step copies or forwards the ticket; every node reads the same file.
 
-### 4.3 Hive JDBC on JDK 24
+### 4.3 Hive on the client (Python)
 
 ```
-HiveKerberosClient24:
-  JAAS login (useTicketCache=true, ticketCache=$KRB5CCNAME, doNotPrompt, renewTGT=false)
-  Subject.callAs(subject, () -> DriverManager.getConnection(url))     [JDK 24: not doAs/getSubject]
-  driver's TSubjectAssumingTransport → (SHIM) Subject.current()+callAs → SASL/GSSAPI → Hive
+krbhpc.hive_client:
+  impala.dbapi.connect(host, port, auth_mechanism="GSSAPI",
+                       kerberos_service_name="hive", use_ssl=True)
+  # GSSAPI reads the TGT from $KRB5CCNAME (FILE:$HOME/.krb5/krb5cc_hpc) directly
+  cur.execute(sql)
 ```
 
-The one-class shim replaces the driver's `TSubjectAssumingTransport`, whose
-stock `Subject.getSubject(AccessControlContext)` call throws
-`UnsupportedOperationException` on JDK 24. `build-shim.sh` compiles the shim
-against the exact driver jar, so an API mismatch fails at build time; the client
-refuses to run unless the shim is the class that loads.
+Python's GSSAPI stack (impyla/PyHive + pure-sasl, or requests-kerberos for the
+HTTP transport) uses the FILE ccache directly. There is **no Security Manager,
+no `Subject.callAs`, and no Hive driver shim** — the JDK-24 problem the Java
+edition worked around simply does not exist here. The only client dependency is
+`pip install 'impyla[kerberos]'`.
 
 ---
 
-## 5. On-disk ticket format (what `CCacheWriter` writes)
+## 5. On-disk ticket format (written by `kinit`)
 
-The output is an MIT credential cache, **version `0x0504`**, big-endian:
+The daemon does **not** serialize ccaches itself — `kinit` writes the standard
+MIT credential cache. This section documents the format for reference (e.g. if
+you inspect or validate the file). It is an MIT credential cache, **version
+`0x0504`**, big-endian:
 
 ```
 uint16  file format version      = 0x0504
@@ -197,10 +200,9 @@ credential (one, the TGT):
 ```
 
 This is the documented MIT `ccache` format; the result is readable by MIT/
-Heimdal `klist`/`kvno`, the JDK's own `Krb5LoginModule`, python-gssapi, and
-other GSSAPI consumers. Writing it directly (rather than via a private JDK API)
-is a deliberate portability choice. *Verified in the tests: MIT tools and the
-JDK both consume the daemon-written cache.*
+Heimdal `klist`/`kvno`, python-gssapi, impyla, and other GSSAPI consumers.
+*Verified in the tests: the daemon-written cache is accepted by a real service
+over GSSAPI, and by `klist`/`kvno`.*
 
 ---
 
@@ -208,11 +210,11 @@ JDK both consume the daemon-written cache.*
 
 | File | Key settings |
 |---|---|
-| `config/credd.properties` | `realm`, `keytab_dir`, `uid_map`, `ccache_path={home}/.krb5/krb5cc_hpc`, `install_helper`, `setpriv`, `ticket_lifetime`, `renew_lifetime`, `renew_margin`, `refresh_interval`, `active_window`, `watch_slurm`, `squeue` |
-| `config/krb5.conf` | single AD realm, AES-only enctypes, `udp_preference_limit=1` (TCP for PAC-laden tickets), `default_ccache_name=FILE:` (Java can't read KEYRING/KCM), `auth_to_local` mapping `hpc-<u>`→`<u>` |
+| `config/credd.conf` | `[broker]` INI: `realm`, `keytab_dir`, `state_dir`, `map_file`, `unix_socket`, `ccache_path={home}/.krb5/krb5cc_hpc`, `install_helper`, `setpriv`, `ticket_lifetime`, `renew_lifetime`, `renew_margin`, `refresh_interval`, `active_window`, `watch_slurm`, `squeue` |
+| `config/krb5.conf` | single AD realm, AES-only enctypes, `udp_preference_limit=1` (TCP for PAC-laden tickets), `default_ccache_name=FILE:`, `auth_to_local` mapping `hpc-<u>`→`<u>` |
 | `config/uidmap.conf` | `<username|uid>  <AD sAMAccountName>`; root-owned, 0644 |
 | `config/profile.d-krb-hpc.sh` | runs `krb-get` at login |
-| `systemd/krb-credd.service` | JDK 24 runtime, `ReadWritePaths` includes the home roots, `CapabilityBoundingSet` = `CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_DAC_READ_SEARCH` |
+| `systemd/krb-credd.service` | runs `krb-credd` (Python), `ReadWritePaths` includes the home roots, `CapabilityBoundingSet` = `CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER` |
 
 ---
 
@@ -302,15 +304,15 @@ tickets expire within `ticket_lifetime`.
 - **Revoke:** `admin/revoke_user.sh <user> <hpc-account>` + disable the AD account.
 - **Health:** the daemon logs each acquire/renew/install; alert on repeated
   acquire failures (keytab or AD problem) and on `uidmap` load refusals.
-- **Upgrade JDK:** the daemon uses only standard modules and public APIs; a JDK
-  minor/major bump needs only a rebuild (`daemon/build.sh`) and a service
-  restart.
+- **Upgrade Python:** the daemon uses only the standard library; a Python
+  minor/major bump needs no rebuild — just restart the service. `pip install .`
+  pins nothing beyond `python3 >= 3.9`.
 
 ---
 
 ## 11. What is tested, and what is not
 
-`tests/verify-shared-home.sh` runs the **real JDK 24 daemon** against an MIT KDC
+`tests/verify-shared-home.sh` runs the **real Python daemon** against an MIT KDC
 standing in for enterprise AD and asserts the full chain
 (`tests/verify-shared-home.output.txt`):
 

@@ -1,23 +1,24 @@
 [Unit]
-Description=Kerberos credential daemon for HPC (krb-credd, Java 24)
+Description=Kerberos credential daemon for HPC (krb-credd, shared-home, Python)
 After=network-online.target remote-fs.target
 Wants=network-online.target
 
 [Service]
-Environment=JAVA_HOME=/usr/lib/jvm/java-24
-ExecStart=/usr/lib/jvm/java-24/bin/java -XX:+UseSerialGC -Xmx256m \
-    -Djava.security.krb5.conf=/etc/krb5.conf \
-    -jar /opt/krb-hpc/krb-credd.jar /etc/krb-hpc/credd.properties
+# Installed via `pip install .` (console script), or run the repo wrapper directly:
+#   ExecStart=/opt/krb-hpc/bin/krb-credd -c /etc/krb-hpc/credd.conf
+ExecStart=/usr/local/bin/krb-credd -c /etc/krb-hpc/credd.conf
 Restart=on-failure
 User=root
 RuntimeDirectory=krb-hpc
+StateDirectory=krb-hpc
 UMask=0077
 ProtectSystem=strict
 # the setpriv child writes into home directories: list your home roots here
-ReadWritePaths=/run/krb-hpc /home
+ReadWritePaths=/var/lib/krb-hpc /run/krb-hpc /home
 PrivateTmp=true
+NoNewPrivileges=false
 # setpriv needs CAP_SETUID/SETGID to act as the user when writing their ccache
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER
 
 [Install]
 WantedBy=multi-user.target

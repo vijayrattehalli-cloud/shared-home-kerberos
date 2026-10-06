@@ -1,11 +1,11 @@
-# verify-shared-home.sh output (recorded 2026-10-06T00:52Z)
-# JDK 24 daemon; single MIT realm standing in for enterprise AD.
+# verify-shared-home.sh output (Python edition; recorded 2026-10-06T10:53Z)
+# Real Python krb-credd daemon vs an MIT KDC standing in for enterprise AD.
 
-PASS  krb-credd issued TGT into shared home: /tmp/sh.c5yN/home/shuser/.krb5/krb5cc_hpc
+PASS  krb-credd (Python) issued TGT into shared home: /tmp/shpy.OAvx/home/shuser/.krb5/krb5cc_hpc
 PASS  ticket owned by shuser, mode 600
 PASS  TGT is forwardable (F)
 PASS  all 4 simulated compute nodes used the in-home ticket to reach the service
 PASS  service accepted ticket; auth_to_local -> 'shuser'
-PASS  squeue-watch renewed the in-home ticket (10/05/26 20:52:53 -> 10/05/26 20:52:59)
+PASS  squeue-watch renewed the in-home ticket (10/06/26 06:53:46 -> 10/06/26 06:53:52)
 
-ALL CHECKS PASSED -- shared home carries one continuously-fresh ticket to every node.
+ALL CHECKS PASSED -- Python shared-home: one continuously-fresh ticket, visible on every node.
