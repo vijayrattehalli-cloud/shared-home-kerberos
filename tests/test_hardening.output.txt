@@ -1,0 +1,11 @@
+ok   test_accepts_0600_keytab_strict_as_root
+ok   test_accepts_locked_down_file_as_root
+ok   test_rejects_dir_when_file_expected
+ok   test_rejects_file_when_dir_expected
+ok   test_rejects_group_writable_file
+ok   test_rejects_non_root_owner
+ok   test_rejects_symlink
+ok   test_rejects_world_writable_file
+ok   test_strict_rejects_group_readable_keytab
+
+all 9 hardening tests passed

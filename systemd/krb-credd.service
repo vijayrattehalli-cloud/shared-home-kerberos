@@ -4,21 +4,39 @@ After=network-online.target remote-fs.target
 Wants=network-online.target
 
 [Service]
-# Installed via `pip install .` (console script), or run the repo wrapper directly:
-#   ExecStart=/opt/krb-hpc/bin/krb-credd -c /etc/krb-hpc/credd.conf
 ExecStart=/usr/local/bin/krb-credd -c /etc/krb-hpc/credd.conf
 Restart=on-failure
+RestartSec=5
 User=root
+UMask=0077
 RuntimeDirectory=krb-hpc
 StateDirectory=krb-hpc
-UMask=0077
+
+# --- sandboxing (tuned so setpriv can drop to the user and kinit can reach AD) ---
 ProtectSystem=strict
-# the setpriv child writes into home directories: list your home roots here
+# krb-credd writes tickets into users' home dirs via the setpriv child:
 ReadWritePaths=/var/lib/krb-hpc /run/krb-hpc /home
+ProtectHome=false
 PrivateTmp=true
-NoNewPrivileges=false
-# setpriv needs CAP_SETUID/SETGID to act as the user when writing their ccache
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# NB: NOT NoNewPrivileges (setpriv re-exec needs it off); the setpriv child
+# itself runs with --no-new-privs and all caps dropped.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+SystemCallFilter=@system-service @setuid
+SystemCallFilter=~@debug @mount @swap @reboot @obsolete @cpu-emulation
+SystemCallErrorNumber=EPERM
+# keytabs are the crown jewels; make them inaccessible to this unit if you
+# relocate them, and keep them root:0600 (the daemon enforces this at startup).
 
 [Install]
 WantedBy=multi-user.target

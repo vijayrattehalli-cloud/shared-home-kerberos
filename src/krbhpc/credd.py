@@ -50,6 +50,30 @@ from ._krb import Krb5, duration_seconds
 log = logging.getLogger("krb-credd")
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 
+# Hard caps to bound local denial-of-service on the UNIX socket.
+MAX_CLIENTS = 32            # concurrent in-flight requests
+CLIENT_TIMEOUT_S = 10       # per-connection socket timeout
+
+
+def _assert_secure(path: Path, *, is_dir: bool, label: str, strict: bool = False) -> None:
+    """Fail closed unless `path` is root-owned, not a symlink, of the expected
+    type, and not group/world writable. With strict=True (used for secret
+    keytabs) require no group/world permission bits at all (i.e. mode 0600)."""
+    import stat as _stat
+    st = path.lstat()
+    if _stat.S_ISLNK(st.st_mode):
+        raise PermissionError(f"{label} {path} must not be a symlink")
+    if st.st_uid != 0:
+        raise PermissionError(f"{label} {path} must be owned by root (uid 0)")
+    if is_dir and not _stat.S_ISDIR(st.st_mode):
+        raise PermissionError(f"{label} {path} must be a directory")
+    if not is_dir and not _stat.S_ISREG(st.st_mode):
+        raise PermissionError(f"{label} {path} must be a regular file")
+    mask = 0o077 if strict else 0o022
+    if st.st_mode & mask:
+        kind = "mode 0600 or stricter" if strict else "not group/world writable"
+        raise PermissionError(f"{label} {path} must be {kind}")
+
 
 @dataclass
 class Config:
@@ -69,9 +93,12 @@ class Config:
     active_window_s: int
     watch_slurm: bool
     squeue: str
+    min_reissue_s: int
 
     @staticmethod
     def load(path: str) -> "Config":
+        # Refuse a config that an attacker could have tampered with.
+        _assert_secure(Path(path), is_dir=False, label="config")
         cp = configparser.ConfigParser(inline_comment_prefixes=(";", "#"))
         cp.read(path)
         s = cp["broker"]
@@ -93,6 +120,7 @@ class Config:
             active_window_s=duration_seconds(s.get("active_window", "7d")),
             watch_slurm=s.getboolean("watch_slurm", True),
             squeue=s.get("squeue", "/usr/bin/squeue"),
+            min_reissue_s=duration_seconds(s.get("min_reissue_interval", "10s")),
         )
 
 
@@ -138,8 +166,17 @@ class TicketManager:
         self._locks: dict[int, threading.Lock] = {}
         self._glock = threading.Lock()
         self._active: dict[int, float] = {}
+        self._last_install: dict[int, float] = {}
+        # The escrowed keytabs are the crown jewels: refuse to run if their
+        # directory is not root-owned and locked down.
+        _assert_secure(cfg.keytab_dir, is_dir=True, label="keytab_dir")
         cfg.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(cfg.state_dir, 0o700)
+        _assert_secure(cfg.state_dir, is_dir=True, label="state_dir")
+        # The helper we exec under setpriv must itself be root-owned and
+        # non-writable, or a local attacker who could edit it would run code
+        # as any user. (setpriv is a trusted system binary; left as-is.)
+        _assert_secure(Path(cfg.install_helper), is_dir=False, label="install_helper")
 
     def master(self, uid: int) -> Path:
         return self.cfg.state_dir / f"krb5cc_{uid}"
@@ -156,6 +193,9 @@ class TicketManager:
         kt = self.keytab(principal)
         if not kt.exists():
             raise FileNotFoundError(f"no escrowed keytab for {principal}")
+        # The keytab holds the user's long-term key: require root:0600 and a
+        # regular (non-symlink) file before we trust it to kinit.
+        _assert_secure(kt, is_dir=False, label="keytab", strict=True)
         tmp = cc.with_suffix(".new")
         self.krb.kinit_keytab(principal, str(kt), str(tmp),
                               self.cfg.ticket_lifetime, self.cfg.renew_lifetime)
@@ -174,17 +214,26 @@ class TicketManager:
         return True
 
     def _install(self, pw: pwd.struct_passwd, src: Path) -> Path:
-        """Copy the master ccache into the user's home, running AS THE USER."""
+        """Copy the master ccache into the user's home, running AS THE USER
+        with all capabilities dropped and a minimal, clean environment."""
         dest = self.home_ccache(pw)
+        clean_env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": pw.pw_dir}
         r = subprocess.run(
             [self.cfg.setpriv, f"--reuid={pw.pw_uid}", f"--regid={pw.pw_gid}",
              "--init-groups", "--inh-caps=-all", "--bounding-set=-all",
-             self.cfg.install_helper, str(dest)],
-            input=src.read_bytes(), capture_output=True, timeout=30)
+             "--no-new-privs", self.cfg.install_helper, str(dest)],
+            input=src.read_bytes(), capture_output=True, timeout=30, env=clean_env)
         if r.returncode != 0:
             raise RuntimeError(
                 f"install into {dest} failed: {r.stderr.decode(errors='replace').strip()}")
+        self._last_install[pw.pw_uid] = time.time()
         return dest
+
+    def due_for_install(self, uid: int) -> bool:
+        """Throttle: skip a fresh re-copy into $HOME if we installed very
+        recently (bounds a krb-get spam / DoS from re-copying each call)."""
+        last = self._last_install.get(uid, 0.0)
+        return (time.time() - last) >= self.cfg.min_reissue_s
 
     def ensure(self, uid: int, force_install: bool = False) -> Path:
         principal = self.map.principal(uid)
@@ -249,27 +298,46 @@ class TicketManager:
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
         tm: TicketManager = self.server.tm
-        creds = self.request.getsockopt(
-            socket.SOL_SOCKET, SO_PEERCRED, struct.calcsize("3i"))
-        _pid, uid, _gid = struct.unpack("3i", creds)
+        sem: threading.BoundedSemaphore = self.server.sem
         try:
-            req = self.rfile.readline(256).decode().strip()
-            if req != "GET":
-                raise ValueError("unsupported request")
-            path = tm.ensure(uid, force_install=True)
-            tm.touch(uid)
-            self.wfile.write(f"OK {path}\n".encode())
-            log.info("issued TGT uid=%d -> %s", uid, path)
-        except PermissionError as e:
-            self.wfile.write(f"ERR {e}\n".encode())
-            log.warning("denied uid=%d: %s", uid, e)
-        except Exception as e:
-            self.wfile.write(b"ERR could not obtain ticket\n")
-            log.error("failed uid=%d: %s", uid, e)
+            self.request.settimeout(CLIENT_TIMEOUT_S)
+        except OSError:
+            pass
+        # Bound concurrent work; shed load rather than fork-bomb under abuse.
+        if not sem.acquire(timeout=CLIENT_TIMEOUT_S):
+            try:
+                self.wfile.write(b"ERR busy\n")
+            except OSError:
+                pass
+            return
+        try:
+            creds = self.request.getsockopt(
+                socket.SOL_SOCKET, SO_PEERCRED, struct.calcsize("3i"))
+            _pid, uid, _gid = struct.unpack("3i", creds)
+            try:
+                req = self.rfile.readline(256).decode("ascii", "replace").strip()
+                if req != "GET":
+                    raise ValueError("unsupported request")
+                # Always ensure validity; only re-copy into $HOME when due
+                # (throttle) or when the ticket actually changed.
+                path = tm.ensure(uid, force_install=tm.due_for_install(uid))
+                tm.touch(uid)
+                self.wfile.write(f"OK {path}\n".encode())
+                log.info("issued TGT uid=%d -> %s", uid, path)
+            except PermissionError as e:
+                self.wfile.write(f"ERR {e}\n".encode())
+                log.warning("denied uid=%d: %s", uid, e)
+            except Exception as e:
+                self.wfile.write(b"ERR could not obtain ticket\n")
+                log.error("failed uid=%d: %s", uid, e)
+        finally:
+            sem.release()
 
 
 class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
+    # Reap threads promptly; cap concurrent handlers via the semaphore below.
+    block_on_close = False
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -290,6 +358,7 @@ def main(argv: list[str] | None = None) -> None:
     srv = Server(str(cfg.unix_socket), Handler)
     os.chmod(cfg.unix_socket, 0o666)  # anyone may connect; SO_PEERCRED decides whose ticket
     srv.tm = tm
+    srv.sem = threading.BoundedSemaphore(MAX_CLIENTS)
     log.info("listening on %s (shared-home; refresh %ds; slurm-watch=%s)",
              cfg.unix_socket, cfg.refresh_interval_s, cfg.watch_slurm)
     try:

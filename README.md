@@ -13,7 +13,10 @@ fewest moving parts of any approach.
 > sees it; a one-line Slurm TaskProlog points `KRB5CCNAME` at it. No SPANK
 > plugin, no KCM, no node-side daemon.
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design,
+[`AD-SETUP.md`](AD-SETUP.md) for the Active Directory side (enrollment, scoped
+`hpc-<user>` accounts, key rotation), and [`SECURITY.md`](SECURITY.md) for the
+threat model and hardening.
 
 ## Why Python (vs the earlier JDK edition)
 
@@ -50,7 +53,7 @@ login/broker tier                       shared filesystem        compute fabric
 | `config/` | `credd.conf`, `krb5.conf`, `uidmap.conf`, `profile.d` hook |
 | `admin/` | AD enrollment, monthly key rotation, revoke |
 | `systemd/krb-credd.service` | run the daemon |
-| `tests/` | `verify-shared-home.sh` (end-to-end) + `test_krb_helpers.py` (unit) |
+| `tests/` | `verify-shared-home.sh` (end-to-end) + `test_krb_helpers.py` + `test_hardening.py` (unit) |
 
 ## Install
 
@@ -88,6 +91,7 @@ sbatch hive-jdbc/...  # see hive_client usage in ARCHITECTURE.md §4
 
 ```bash
 python3 tests/test_krb_helpers.py                       # unit (no Kerberos needed)
+python3 tests/test_hardening.py                         # fail-closed permission checks
 JAVA_HOME= sudo -E tests/verify-shared-home.sh          # end-to-end (needs MIT krb5 + root)
 ```
 

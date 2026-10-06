@@ -58,11 +58,24 @@ def parse_klist(output: str) -> TgtTimes | None:
 class Krb5:
     """Thin wrapper over kinit/klist with a pinned config and C locale."""
 
+    # Variables scrubbed from the Kerberos tools' environment: the arbitrary-
+    # code dynamic-linker vectors, and any inherited credential-cache / keytab
+    # pointers (every call passes -c / -t explicitly, so these must not leak
+    # in). LD_LIBRARY_PATH is intentionally preserved: some sites install MIT
+    # krb5 under a non-standard prefix and rely on it.
+    _SCRUB = ("LD_PRELOAD", "LD_AUDIT", "KRB5CCNAME", "KRB5_KTNAME", "KRB5_TRACE")
+
     def __init__(self, krb5_conf: str, extra_env: dict | None = None):
         import os
-        self.env = dict(os.environ, KRB5_CONFIG=krb5_conf, LC_ALL="C")
+        # Start from the daemon's (systemd-controlled) environment so TZ and
+        # the standard paths are preserved, then remove the injection vectors
+        # and pin the config and C locale (stable date parsing).
+        env = {k: v for k, v in os.environ.items() if k not in self._SCRUB}
+        env["KRB5_CONFIG"] = krb5_conf
+        env["LC_ALL"] = "C"
         if extra_env:
-            self.env.update(extra_env)
+            env.update(extra_env)
+        self.env = env
 
     def run(self, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
         return subprocess.run(args, env=self.env, capture_output=True,
