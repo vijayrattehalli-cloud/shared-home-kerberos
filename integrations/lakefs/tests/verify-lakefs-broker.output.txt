@@ -1,0 +1,11 @@
+# verify-lakefs-broker.sh output (recorded 2026-10-07T18:44Z)
+# Flask broker + stdlib mock lakeFS + MIT KDC (gss-server/gss-client). No real lakeFS/Apache.
+
+--- Part 1: Kerberos identity -> short-lived lakeFS key (mint path) ---
+PASS  unauthenticated request rejected (401 -- needs mod_auth_gssapi/REMOTE_USER)
+PASS  broker minted a short-lived lakeFS key for principal jdoe@ENT.TEST (user=jdoe, has expiry)
+PASS  lakeFS Auth API called for mapped user 'jdoe' with broker admin auth
+--- Part 2: a user's ticket authenticates to the broker's HTTP/<host> SPN ---
+PASS  ticket authenticated to HTTP/vm and resolved to 'jdoe' (= REMOTE_USER mod_auth_gssapi sets)
+ALL CHECKS PASSED -- Kerberos identity bridged to a short-lived lakeFS key.
+(Production wires Part 2's SPNEGO to Part 1's REMOTE_USER via mod_auth_gssapi.)

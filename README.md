@@ -162,7 +162,9 @@ is the shared-home design only.
   (SPNEGO) for a short-lived lakeFS access key that an S3A credentials provider
   feeds to Spark. Design + config in
   [`docs/lakefs-integration.md`](docs/lakefs-integration.md); diagram in
-  [`docs/lakefs-s3a-architecture.svg`](docs/lakefs-s3a-architecture.svg).
+  [`docs/lakefs-s3a-architecture.svg`](docs/lakefs-s3a-architecture.svg); a
+  **runnable reference** (broker + S3A provider + e2e test) in
+  [`integrations/lakefs/`](integrations/lakefs/).
 
 ## License
 

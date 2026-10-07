@@ -1,0 +1,27 @@
+# Spark / S3A configuration for lakeFS Enterprise with the Kerberos credentials
+# provider. Pass with --conf, or put (without the "spark.hadoop." prefix for the
+# fs.s3a.* lines) in core-site.xml. Jobs run on compute nodes where krb-credd's
+# shared-home ticket is visible via KRB5CCNAME (set by the Slurm TaskProlog).
+
+# --- the lakeFS S3 gateway endpoint (NOT AWS) ---
+spark.hadoop.fs.s3a.endpoint                 https://lakefs.corp.example.mil:8000
+spark.hadoop.fs.s3a.path.style.access        true
+spark.hadoop.fs.s3a.connection.ssl.enabled   true
+
+# --- authenticate via the Kerberos -> lakeFS-key provider ---
+spark.hadoop.fs.s3a.aws.credentials.provider com.example.lakefs.LakeFSKerberosCredentialProvider
+spark.hadoop.fs.s3a.ext.lakefs.broker.url    https://lakefs-sts.corp.example.mil/credentials
+# Optional; derived from the url host if omitted. GSS host-based form:
+spark.hadoop.fs.s3a.ext.lakefs.broker.spn    HTTP@lakefs-sts.corp.example.mil
+
+# --- make JGSS use the OS (MIT) GSSAPI so it reads the native ccache that holds
+#     only the pre-minted HTTP/<host> service ticket (no TGT) ---
+spark.driver.extraJavaOptions                -Dsun.security.jgss.native=true
+spark.executor.extraJavaOptions              -Dsun.security.jgss.native=true
+
+# --- ship the provider jar (or install it into $SPARK_HOME/jars on every node) ---
+spark.jars                                   /opt/lakefs/lakefs-kerberos-s3a-provider-1.0.0.jar
+
+# Usage in the job (lakeFS repo = bucket, branch = first path element):
+#   df = spark.read.parquet("s3a://my-repo/main/datasets/events/")
+#   df.write.mode("overwrite").parquet("s3a://my-repo/experiment-x/out/")

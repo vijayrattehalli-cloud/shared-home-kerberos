@@ -4,10 +4,11 @@ How a Slurm job authenticates to **lakeFS Enterprise** over **S3A/Spark** when
 credentials come from [`krb-credd`](../README.md). Companion diagram:
 [`docs/lakefs-s3a-architecture.svg`](lakefs-s3a-architecture.svg).
 
-> This is a design/reference. krb-credd and the Spark path are implemented and
-> tested in this repo; the lakeFS **credential broker** and the **S3A credentials
-> provider** below are the integration you add. Confirm the exact lakeFS
-> Enterprise Auth/STS request shapes against current lakeFS docs before building.
+> A **runnable reference** for the two new pieces (the credential broker and the
+> S3A provider), with an end-to-end test against a local MIT KDC, lives in
+> [`integrations/lakefs/`](../integrations/lakefs/). This page is the design;
+> that directory is the code. Confirm the exact lakeFS Enterprise Auth/STS
+> request shapes against current lakeFS docs before production.
 
 ---
 

@@ -1,0 +1,4 @@
+Flask>=2.0
+requests>=2.25
+# No GSSAPI library: SPNEGO is handled by Apache + mod_auth_gssapi in front.
+# For a WSGI server in production use gunicorn or mod_wsgi.

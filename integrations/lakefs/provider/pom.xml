@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.example.lakefs</groupId>
+  <artifactId>lakefs-kerberos-s3a-provider</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+  <name>lakeFS Kerberos S3A credentials provider</name>
+  <description>S3A AWSCredentialsProvider that trades a Kerberos ticket (SPNEGO)
+    at the lakeFS credential broker for a short-lived lakeFS access key.</description>
+
+  <properties>
+    <maven.compiler.release>11</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- Match your cluster. These are provided by the Spark/Hadoop runtime. -->
+    <hadoop.version>3.3.6</hadoop.version>
+    <aws.sdk.bundle.version>1.12.767</aws.sdk.bundle.version>
+  </properties>
+
+  <dependencies>
+    <!-- All provided at runtime by Spark's Hadoop/S3A classpath. -->
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-aws</artifactId>
+      <version>${hadoop.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-common</artifactId>
+      <version>${hadoop.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.amazonaws</groupId>
+      <artifactId>aws-java-sdk-bundle</artifactId>
+      <version>${aws.sdk.bundle.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <!-- org.ietf.jgss is part of the JDK; no dependency needed. -->
+  </dependencies>
+
+  <build>
+    <finalName>lakefs-kerberos-s3a-provider-${version}</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+<!--
+  Build:   mvn -q clean package
+  Deploy:  copy target/lakefs-kerberos-s3a-provider-1.0.0.jar to the Spark jars
+           dir on every node (or pass via --jars). AWS SDK v2 users: adapt to
+           software.amazon.awssdk.auth.credentials.AwsCredentialsProvider.
+-->
