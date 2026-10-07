@@ -153,6 +153,17 @@ all four simulated compute nodes reading the one file, service accept +
 If these are unacceptable, a node-local-KCM design is the alternative; this repo
 is the shared-home design only.
 
+## Integrations
+
+- **Hive / HDFS** — the job's cache already holds the `hive/_HOST`, `hdfs/_HOST`
+  service tickets; use them over GSSAPI (see `src/krbhpc/hive_client.py`).
+- **lakeFS Enterprise over Spark/S3A** — lakeFS has no native Kerberos, so a
+  small Kerberos-authenticated **credential broker** trades the job's ticket
+  (SPNEGO) for a short-lived lakeFS access key that an S3A credentials provider
+  feeds to Spark. Design + config in
+  [`docs/lakefs-integration.md`](docs/lakefs-integration.md); diagram in
+  [`docs/lakefs-s3a-architecture.svg`](docs/lakefs-s3a-architecture.svg).
+
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).
