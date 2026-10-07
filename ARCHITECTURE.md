@@ -97,6 +97,13 @@ allow-list). Both rely on the same S4U mechanism; note that Sybil's own
 requirement of the MIT **LDAP backend** "required for S4U to work" matches the
 limitation recorded in §11: a file/DB2 KDC cannot authorize S4U2Proxy.
 
+If you specifically want to run **Sybil's own components against AD**, that means
+`sybild` as a **remote** S4U client of the AD KDC (not co-located) using AD's
+`msDS-AllowedToDelegateTo` in place of the MIT LDAP backend — drawn, with the
+caveats, in [`docs/sybil-on-ad-architecture.svg`](docs/sybil-on-ad-architecture.svg).
+Architecturally that is the same topology as `krb-credd`; it is not a deployment
+NVIDIA documents or supports.
+
 **Consequence: no general-purpose TGT.** The user's cache holds **service
 tickets to the enumerated backends only** — not a TGT. There is no approved way
 to perform Kerberos initial authentication *as the user* on the HPC (that was
