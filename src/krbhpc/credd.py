@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-krb-credd -- Kerberos credential daemon for a CAC / UID-GID HPC cluster
+krb-credd -- Kerberos client broker (root) for a CAC / UID-GID HPC cluster
 (shared-home design, pure Python).
+
+It is a Kerberos CLIENT of Active Directory -- it runs no KDC or realm of its
+own. AD is the single KDC; this daemon holds one broker service-account keytab
+and calls S4U2Self/S4U2Proxy as an ordinary MIT krb5 client.
 
 Users reach the HPC with a CAC, which cannot be used through GSSAPI/PKINIT to
 get a TGT, and GSSAPI credential forwarding over SSH is blocked. Instead of an

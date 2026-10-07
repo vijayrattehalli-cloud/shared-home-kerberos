@@ -1,5 +1,5 @@
 [Unit]
-Description=Kerberos credential daemon for HPC (krb-credd, shared-home, Python)
+Description=krb-credd -- Kerberos client broker (root) for HPC (shared-home, S4U client of AD)
 After=network-online.target remote-fs.target
 Wants=network-online.target
 

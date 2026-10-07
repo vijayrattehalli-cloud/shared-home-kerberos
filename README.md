@@ -9,12 +9,19 @@ Directory Kerberos credentials** on login nodes and on **every compute node of a
 Slurm job**, including **Hive** access — with the fewest moving parts, and
 **without a standing secret per user**.
 
-> **The idea in one line:** a root daemon holds **one** broker service-account
-> keytab and uses **Kerberos constrained delegation (S4U2Self + S4U2Proxy)** to
-> mint each user's backend **service tickets**, writing them into the user's home
-> directory on the **shared filesystem** — so every compute node already sees
-> them. A one-line Slurm TaskProlog points `KRB5CCNAME` at the cache. No SPANK
-> plugin, no KCM, no node-side daemon, and no per-user keytabs.
+> **The idea in one line:** **`krb-credd` — a Kerberos client broker (root)** —
+> holds **one** broker service-account keytab and uses **Kerberos constrained
+> delegation (S4U2Self + S4U2Proxy)** to mint each user's backend **service
+> tickets**, writing them into the user's home directory on the **shared
+> filesystem** — so every compute node already sees them. A one-line Slurm
+> TaskProlog points `KRB5CCNAME` at the cache. No SPANK plugin, no KCM, no
+> node-side daemon, and no per-user keytabs.
+
+`krb-credd` is a **client** of Active Directory — it runs **no KDC or realm of
+its own**. AD is the single KDC; the daemon authenticates with one service keytab
+and calls S4U as an ordinary MIT krb5 client. (It is deliberately **not** NVIDIA
+Sybil, which forges tickets from the KDC database and must run on an MIT/FreeIPA
+KDC — see [`ARCHITECTURE.md`](ARCHITECTURE.md) §2.1.1.)
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design,
 [`AD-SETUP.md`](AD-SETUP.md) for the Active Directory side (broker account,

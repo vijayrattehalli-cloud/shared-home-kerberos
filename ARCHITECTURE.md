@@ -42,8 +42,8 @@ Two independent decisions define the architecture.
 ### 2.1 Issuance: one broker account + constrained delegation (not per-user keytabs)
 
 Because the CAC cannot obtain a TGT on the HPC and forwarding is blocked, a
-privileged daemon (**`krb-credd`**) authenticates to AD and obtains each user's
-credentials on their behalf. The naïve way to do that is an escrowed **per-user
+privileged daemon — **`krb-credd`, a Kerberos client broker (root)** —
+authenticates to AD and obtains each user's credentials on their behalf. The naïve way to do that is an escrowed **per-user
 keytab** — but a keytab is a long-term, exportable, copyable key, which is
 exactly the property CAC/PIV exists to eliminate, and it means **N standing
 secrets** to escrow, rotate, protect, and revoke. That weakens the reason for
