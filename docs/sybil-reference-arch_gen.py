@@ -53,8 +53,8 @@ def arrow(p0, p1, *, c=INK, lw=2.0, style="-|>", rad=0.0, z=4, ls="-"):
 # ---------- title ----------
 text(W/2, 978, "NVIDIA Sybil — Reference Architecture  (as the project documents it)",
      size=20, w="bold", ha="center")
-text(W/2, 949, "sybild runs ALONGSIDE the KDC and impersonates users via S4U for Slurm batch jobs  •  MIT (LDAP backend) or FreeIPA / RHEL IdM",
-     size=11.5, c=SUB, ha="center")
+text(W/2, 949, "sybild runs ALONGSIDE the KDC and impersonates users by FORGING TGTs (reads keys from the KDC DB via kadm5)  •  MIT (LDAP backend) or FreeIPA / IdM",
+     size=11, c=SUB, ha="center")
 text(W/2, 929, "one Linux Kerberos realm — NOT Active Directory (AD is not in Sybil's supported environment; for the AD client adaptation see krb-credd-architecture)",
      size=9.5, c=SUB, ha="center", style="italic")
 
@@ -75,19 +75,21 @@ box(82, 548, 596, 300, fc="white", ec=CORE, lw=1.8)
 text(100, 832, "MIT KDC (LDAP backend)  /  FreeIPA IdM", size=12.8, w="bold", c=CORE)
 text(100, 800, "•  AS / TGS   (Kerberos, TCP 88)", size=11.3)
 box(100, 572, 560, 200, fc="#F4FAF6", ec=CORE, lw=1.3, r=0.03)
-text(118, 758, "LDAP directory  (backend — required for S4U)", size=11.4, w="bold", c=CORE)
-text(118, 728, "•  krbAllowedToDelegateTo  =  { svc/… }\n"
-               "      ← the S4U2Proxy allow-list\n"
-               "•  target services flagged  +ok_as_delegate\n"
-               "•  “Allow delegation to the Sybil server”", size=10.6, ls=1.5)
+text(118, 758, "KDB (LDAP backend)  —  sybild reads keys here", size=11.4, w="bold", c=CORE)
+text(118, 728, "•  principal keys incl. krbtgt  ← read via kadm5 (forging)\n"
+               "•  krbAllowedToDelegateTo { svc/… } + ok_as_delegate\n"
+               "      ← S4U ACLs for sybild's outbound delegation\n"
+               "•  LDAP backend “required for S4U to work”", size=10.3, ls=1.5)
 
 # sybild (focal)
-box(82, 322, 596, 196, fc="#FFF8EE", ec=ACCENT, lw=2.6)
-text(100, 500, "sybild — privileged delegation daemon", size=12.8, w="bold", c=ACCENT)
-text(100, 468, "•  hosted ALONGSIDE the KDC\n"
-               "•  impersonates users via S4U2Self + S4U2Proxy (GSSAPI)\n"
-               "•  ACLs in /etc/sybil.toml  •  sybil service keytab\n"
-               "•  NOT a KDC — no master key; uses a service principal", size=10.6, ls=1.5)
+box(82, 314, 596, 210, fc="#FFF8EE", ec=ACCENT, lw=2.6)
+text(100, 508, "sybild — privileged delegation daemon", size=12.8, w="bold", c=ACCENT)
+text(100, 478, "•  hosted ALONGSIDE the KDC — needs kadm5 / KDB access\n"
+               "•  impersonation = FORGE a user TGT: reads the realm\n"
+               "      krbtgt key from the KDC DB (kadm5_get_principal_keys)\n"
+               "      and signs a hand-built ticket   [lib.rs → krbutil.c]\n"
+               "•  also uses GSSAPI S4U for outbound service delegation\n"
+               "•  /etc/sybil.toml ACLs  •  sybil keytab + kadm5 rights", size=10, ls=1.42)
 
 # KCM
 box(82, 130, 596, 162, fc="white", ec=CORE, lw=1.8)
@@ -97,9 +99,9 @@ text(100, 244, "•  “store delegated credentials” via the KCM protocol\n"
                "•  the credential store the job's creds come from", size=10.6, ls=1.5)
 
 # internal core arrows
-arrow((380, 548), (380, 518), c=CORE, lw=1.8)                 # KDC <-> sybild (S4U)
-arrow((380, 518), (380, 548), c=CORE, lw=1.8)
-text(392, 538, "S4U2Self + S4U2Proxy\n(authorized by LDAP)", size=9.4, c=CORE, va="center")
+arrow((380, 548), (380, 524), c=CORE, lw=1.8)                 # KDC DB <-> sybild (kadm5 key read)
+arrow((380, 524), (380, 548), c=CORE, lw=1.8)
+text(392, 540, "kadm5: read keys\n(forge the user TGT)", size=9.2, c=CORE, va="center")
 arrow((250, 322), (250, 292), c=CORE, lw=1.8)                 # sybild -> KCM store
 text(262, 312, "store delegated creds", size=9.4, c=CORE)
 

@@ -80,29 +80,37 @@ SPNs and nothing else.
 
 ### 2.1.1 Relationship to NVIDIA/sybil
 
-This design borrows its *core idea* — impersonate batch users via **S4U
-constrained delegation** — from [NVIDIA/sybil](https://github.com/NVIDIA/sybil),
-but it is **not** Sybil and does not deploy like it. Per Sybil's own docs, `sybild`
-is "a privileged daemon hosted **alongside the KDC**," it requires **MIT Kerberos
-with the LDAP backend** (needed for S4U) or **FreeIPA/RHEL IdM**, it stores
-credentials through **KCM**, and it ships a **SPANK** Slurm plugin — a single
-Linux realm with the daemon co-located at the KDC. **Active Directory is not in
-its documented environment.** Its real topology is drawn in
+This design shares a *goal* with [NVIDIA/sybil](https://github.com/NVIDIA/sybil)
+— impersonate batch users so Slurm jobs get Kerberos credentials — but uses a
+**different mechanism**, and the two should not be conflated. This was verified
+by reading Sybil's source, not just its README.
+
+**How Sybil actually works.** `sybild` is "a privileged daemon hosted
+**alongside the KDC**," requires **MIT Kerberos with the LDAP backend** or
+**FreeIPA/RHEL IdM**, stores credentials through **KCM**, and ships a **SPANK**
+Slurm plugin. Its impersonation path (`sybil kinit user@REALM`) **forges a TGT**:
+`src/lib.rs:266` calls `krb::Credentials::forge(user, "krbtgt/REALM", …)`, and
+`src/krb/krbutil.c` signs that ticket with the realm's **krbtgt key read from the
+KDC database via `kadm5_get_principal_keys()`** (krbutil.c:148-176, 214-286;
+`kadm5_init` at :42). There is **no S4U-only mode** — forging is unconditional.
+(The GSSAPI S4U call at `src/gss.rs:154` is only for `sybild`'s *outbound* client
+contexts, not for minting the user's ticket.) So Sybil fundamentally needs
+**kadm5/KDB access** and must run co-located with an MIT/FreeIPA KDC; its native
+topology is drawn in
 [`docs/sybil-reference-architecture.svg`](docs/sybil-reference-architecture.svg).
 
-`krb-credd` instead targets an existing **AD** realm as a remote MIT **client**
-(no co-located KDC, no LDAP backend of our own, no SPANK — AD's
-`msDS-AllowedToDelegateTo` plays the role of Sybil's LDAP `krbAllowedToDelegateTo`
-allow-list). Both rely on the same S4U mechanism; note that Sybil's own
-requirement of the MIT **LDAP backend** "required for S4U to work" matches the
-limitation recorded in §11: a file/DB2 KDC cannot authorize S4U2Proxy.
+**Sybil cannot run against Active Directory.** AD exposes no kadm5/KDB key
+interface and never releases the krbtgt key (extracting it is **DCSync** — full
+domain compromise), so `sybild`'s forge-based impersonation is impossible there.
+This is drawn, with the source citations, in
+[`docs/sybil-ad-incompatibility.svg`](docs/sybil-ad-incompatibility.svg).
 
-If you specifically want to run **Sybil's own components against AD**, that means
-`sybild` as a **remote** S4U client of the AD KDC (not co-located) using AD's
-`msDS-AllowedToDelegateTo` in place of the MIT LDAP backend — drawn, with the
-caveats, in [`docs/sybil-on-ad-architecture.svg`](docs/sybil-on-ad-architecture.svg).
-Architecturally that is the same topology as `krb-credd`; it is not a deployment
-NVIDIA documents or supports.
+**What `krb-credd` does instead.** It targets an existing **AD** realm as a plain
+Kerberos **S4U client** — it holds a service keytab and calls S4U2Self/S4U2Proxy
+over the wire; **AD** issues every ticket and authorizes delegation via
+`msDS-AllowedToDelegateTo`. No KDB access, no key reading, no co-location. Same
+goal as Sybil, a different and AD-supported mechanism (constrained delegation,
+not forging).
 
 **Consequence: no general-purpose TGT.** The user's cache holds **service
 tickets to the enumerated backends only** — not a TGT. There is no approved way
