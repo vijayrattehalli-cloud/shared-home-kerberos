@@ -19,7 +19,10 @@ Slurm job**, including **Hive** access — with the fewest moving parts, and
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design,
 [`AD-SETUP.md`](AD-SETUP.md) for the Active Directory side (broker account,
 constrained delegation, enrollment), and [`SECURITY.md`](SECURITY.md) for the
-threat model and hardening.
+threat model and hardening. The cross-boundary topology — the broker as an MIT
+krb5 **client** in the Linux boundary, AD's KDC in the Windows boundary, S4U over
+TCP 88 across the realm edge — is in
+[`docs/krb-credd-architecture.svg`](docs/krb-credd-architecture.svg).
 
 ## Why constrained delegation (not per-user keytabs)
 

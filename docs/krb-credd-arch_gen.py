@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Generate the Sybil cross-boundary architecture diagram.
+"""Generate the krb-credd cross-boundary architecture diagram.
 
-Sybil (the Linux-side credential broker daemon) sits in the HPC/Linux trust
-boundary and talks Kerberos across the realm edge to the Active Directory KDC in
-the Windows boundary. Renders docs/sybil-architecture.{svg,png,pdf}.
+krb-credd (the Linux-side credential broker daemon) is an MIT krb5 CLIENT of
+Active Directory -- it has NO KDC or realm of its own. It sits in the HPC/Linux
+trust boundary and talks Kerberos across the realm edge to the AD KDC in the
+Windows boundary, minting per-user service tickets by constrained delegation
+(S4U2Self + S4U2Proxy). Renders docs/krb-credd-architecture.{svg,png,pdf}.
+
+(The box was previously labeled "Sybil". It is relabeled here because it runs in
+S4U client mode against AD -- not Sybil's native KDC-adjacent design, which
+assumes an MIT/FreeIPA KDC the daemon sits next to. AD is the sole KDC.)
 
 Layout rule that keeps it legible: the two trust boundaries are wide zone boxes
 with a clear CENTER LANE between them; every cross-boundary arrow and its label
@@ -43,10 +49,12 @@ def arrow(p0, p1, *, c=INK, lw=2.0, style="-|>", rad=0.0, z=4, ls="-"):
 
 
 # ---------- title ----------
-text(W/2, 975, "Sybil Credential Broker — Linux ↔ Active Directory Kerberos Architecture",
-     size=20.5, w="bold", ha="center")
-text(W/2, 944, "Sybil runs in the Linux / HPC boundary and authenticates across the realm edge to the AD KDC in the Windows boundary",
-     size=12, c=SUB, ha="center")
+text(W/2, 977, "krb-credd Credential Broker — Linux Kerberos CLIENT ↔ Active Directory KDC",
+     size=20, w="bold", ha="center")
+text(W/2, 948, "The broker is an MIT krb5 CLIENT of AD (no KDC of its own); it mints per-user service tickets by constrained delegation (S4U) across the realm edge",
+     size=11.5, c=SUB, ha="center")
+text(W/2, 928, "(the broker runs in S4U client mode against AD — not Sybil's native KDC-adjacent design; AD is the sole KDC)",
+     size=9.5, c=SUB, ha="center", style="italic")
 
 # ---------- zone backgrounds ----------
 box(40, 70, 610, 848, fc=WIN_FILL, ec=WIN, lw=2.2, r=0.012, z=1)
@@ -75,7 +83,7 @@ text(90, 527, "•  AS / TGS   (Kerberos, TCP 88)\n"
               "•  kadmin  •  LDAP  •  DNS\n"
               "•  PAC signing & validation  (KB5008380)", size=11.3, ls=1.45)
 box(90, 170, 520, 170, fc="#F4F8FD", ec=WIN, lw=1.3, r=0.03)
-text(108, 322, "Delegation policy  (authorizes Sybil's S4U)", size=11.6, w="bold", c=WIN)
+text(108, 322, "Delegation policy  (authorizes the broker's S4U)", size=11.6, w="bold", c=WIN)
 text(108, 292, "•  msDS-AllowedToDelegateTo = { hive/…, hdfs/… }\n"
                "      ← the S4U allow-list (the boundary of trust)\n"
                "•  broker: TrustedToAuthForDelegation (protocol transition)\n"
@@ -93,14 +101,15 @@ text(950, 846, "•  CAC-gated OS login (UID / GID only)\n"
                "•  the node itself knows no Kerberos", size=11)
 
 box(930, 452, 570, 300, fc="#FFF8EE", ec=ACCENT, lw=2.6)
-text(950, 736, "Sybil — credential broker daemon  (root)", size=13.5, w="bold", c=ACCENT)
-text(950, 700, "•  holds ONE broker keytab  (gMSA / HSM-backable)\n"
+text(950, 738, "krb-credd — Kerberos client broker  (root)", size=13.5, w="bold", c=ACCENT)
+text(950, 706, "•  MIT krb5 CLIENT of AD — NO KDC / realm of its own\n"
+               "      (libkrb5 / GSSAPI • broker keytab • krb5.conf • ccache)\n"
+               "•  holds ONE broker keytab  (gMSA / HSM-backable)\n"
                "•  broker TGT:  kinit -k  (renewable, unattended)\n"
-               "•  mints per-user SERVICE tickets:\n"
-               "      S4U2Self  +  S4U2Proxy  (constrained delegation)\n"
+               "•  mints per-user SERVICE tickets  (S4U2Self + S4U2Proxy)\n"
                "•  installs as the user  (setpriv → $HOME, 0600)\n"
                "•  front door: UNIX socket, SO_PEERCRED  ◀  krb-get",
-     size=11.2, ls=1.5)
+     size=10.6, ls=1.45)
 
 box(930, 300, 270, 120, fc="white", ec=LNX)
 text(950, 405, "Shared filesystem home", size=11.8, w="bold")
@@ -142,7 +151,7 @@ kerb(455, "③  S4U2Proxy  →  Hive/HDFS tkts", "(for <user>)")
 arrow((LANE_L+5, 700), (LANE_R-5, 700), c=RED, lw=1.9, style="-|>", ls=(0, (5, 4)))
 ax.add_patch(Circle((MID, 700), 12, fill=False, ec=RED, lw=2.2, zorder=7))
 ax.add_line(Line2D([MID-8.5, MID+8.5], [700-8.5, 700+8.5], color=RED, lw=2.2, zorder=8))
-text(MID, 732, "user TGT not forwarded\n(SSH GSSAPI blocked)\n— why Sybil exists",
+text(MID, 732, "user TGT not forwarded\n(SSH GSSAPI blocked)\n— why the broker exists",
      size=9.4, w="bold", c=RED, ha="center", va="bottom", ls=1.3)
 
 # faint validation: services -> KDC across the lane
@@ -159,8 +168,8 @@ for col, st, lab in [
         ("#9AA7B5", (0, (3, 3)), "validation")]:
     ax.add_line(Line2D([x, x+38], [ly, ly], color=col, lw=2.4, ls=st, zorder=6))
     text(x+46, ly, lab, size=10.3, va="center"); x += 46 + len(lab)*6.9 + 34
-text(x, ly, "Focal node: Sybil (amber)", size=10.3, c=ACCENT, w="bold", va="center")
+text(x, ly, "Focal node: krb-credd (amber)", size=10.3, c=ACCENT, w="bold", va="center")
 
 for ext in ("svg", "png", "pdf"):
-    fig.savefig(f"docs/sybil-architecture.{ext}", facecolor="white", pad_inches=0)
-print("wrote docs/sybil-architecture.{svg,png,pdf}")
+    fig.savefig(f"docs/krb-credd-architecture.{ext}", facecolor="white", pad_inches=0)
+print("wrote docs/krb-credd-architecture.{svg,png,pdf}")

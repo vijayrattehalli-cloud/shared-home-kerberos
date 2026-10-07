@@ -68,6 +68,16 @@ Kerberos to backends, and it collapses N keytabs into **one** broker credential
 scoped — by AD's `msDS-AllowedToDelegateTo` — to exactly the enumerated service
 SPNs and nothing else.
 
+> **`krb-credd` is an MIT krb5 *client* of AD — it runs no KDC or realm of its
+> own.** On the Linux host it uses the MIT client stack (`kinit`/`klist`/`kvno`,
+> `libkrb5`/GSSAPI) with a client-side `krb5.conf`, the broker keytab, and a
+> credential cache. All tickets are issued and all delegation is authorized by
+> **Active Directory**, which is the single KDC for the realm. The broker does
+> not sit adjacent to a KDC and holds no KDC key material. The cross-boundary
+> topology is drawn in [`docs/krb-credd-architecture.svg`](docs/krb-credd-architecture.svg)
+> (PNG/PDF alongside): the broker in the Linux boundary, AD's KDC in the Windows
+> boundary, and the S4U exchanges (TCP 88) across the realm edge.
+
 **Consequence: no general-purpose TGT.** The user's cache holds **service
 tickets to the enumerated backends only** — not a TGT. There is no approved way
 to perform Kerberos initial authentication *as the user* on the HPC (that was
