@@ -78,6 +78,25 @@ SPNs and nothing else.
 > (PNG/PDF alongside): the broker in the Linux boundary, AD's KDC in the Windows
 > boundary, and the S4U exchanges (TCP 88) across the realm edge.
 
+### 2.1.1 Relationship to NVIDIA/sybil
+
+This design borrows its *core idea* — impersonate batch users via **S4U
+constrained delegation** — from [NVIDIA/sybil](https://github.com/NVIDIA/sybil),
+but it is **not** Sybil and does not deploy like it. Per Sybil's own docs, `sybild`
+is "a privileged daemon hosted **alongside the KDC**," it requires **MIT Kerberos
+with the LDAP backend** (needed for S4U) or **FreeIPA/RHEL IdM**, it stores
+credentials through **KCM**, and it ships a **SPANK** Slurm plugin — a single
+Linux realm with the daemon co-located at the KDC. **Active Directory is not in
+its documented environment.** Its real topology is drawn in
+[`docs/sybil-reference-architecture.svg`](docs/sybil-reference-architecture.svg).
+
+`krb-credd` instead targets an existing **AD** realm as a remote MIT **client**
+(no co-located KDC, no LDAP backend of our own, no SPANK — AD's
+`msDS-AllowedToDelegateTo` plays the role of Sybil's LDAP `krbAllowedToDelegateTo`
+allow-list). Both rely on the same S4U mechanism; note that Sybil's own
+requirement of the MIT **LDAP backend** "required for S4U to work" matches the
+limitation recorded in §11: a file/DB2 KDC cannot authorize S4U2Proxy.
+
 **Consequence: no general-purpose TGT.** The user's cache holds **service
 tickets to the enumerated backends only** — not a TGT. There is no approved way
 to perform Kerberos initial authentication *as the user* on the HPC (that was
