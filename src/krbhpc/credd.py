@@ -41,7 +41,8 @@ Front door: a UNIX-domain socket. The caller's UID comes from the kernel
 (SO_PEERCRED), never from the request, so a user can only ever obtain their own
 tickets, and only if enrolled.
 
-Dependencies: python3 stdlib, MIT krb5 client tools (kinit, klist, kvno),
+Dependencies: python3 stdlib, MIT krb5 1.19+ client tools (kinit, klist, kvno;
+run by absolute path),
 util-linux setpriv, and the Slurm client (squeue) when watch_slurm is on.
 """
 from __future__ import annotations
@@ -57,10 +58,11 @@ import struct
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from ._krb import Krb5, duration_seconds
+from ._krb import DEFAULT_TOOLS, Krb5, KrbToolError, duration_seconds
 
 log = logging.getLogger("krb-credd")
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
@@ -68,6 +70,21 @@ SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 # Hard caps to bound local denial-of-service on the UNIX socket.
 MAX_CLIENTS = 32            # concurrent in-flight requests
 CLIENT_TIMEOUT_S = 10       # per-connection socket timeout
+
+# Background-refresh backoff after a failed mint: transient failures (KDC
+# unreachable, timeout) retry sooner than ones that need an admin (account not
+# delegable, unknown principal, broker key problem).
+BACKOFF_TRANSIENT_S = (60, 900)      # first retry, cap
+BACKOFF_PERMANENT_S = (900, 3600)
+
+# What a user sees for each failure category (details go to the log only).
+USER_MESSAGES = {
+    "not_delegable": "your account cannot be delegated to the HPC services; contact the HPC admins",
+    "unknown_principal": "your account was not found in Active Directory; contact the HPC admins",
+    "kdc_unreachable": "the Kerberos server is unreachable; try again shortly",
+    "timeout": "the Kerberos server did not answer in time; try again shortly",
+    "clock_skew": "clock skew with the Kerberos server; contact the HPC admins",
+}
 
 
 def _assert_secure(path: Path, *, is_dir: bool, label: str, strict: bool = False) -> None:
@@ -112,6 +129,9 @@ class Config:
     watch_slurm: bool
     squeue: str
     min_reissue_s: int
+    tools: dict                   # absolute paths of kinit / klist / kvno
+    s4u_enterprise: bool          # kvno -U (enterprise name) vs -I (principal)
+    refresh_workers: int          # users refreshed in parallel per pass
 
     @staticmethod
     def load(path: str) -> "Config":
@@ -148,7 +168,17 @@ class Config:
             watch_slurm=s.getboolean("watch_slurm", True),
             squeue=s.get("squeue", "/usr/bin/squeue"),
             min_reissue_s=duration_seconds(s.get("min_reissue_interval", "10s")),
+            tools={t: s.get(t, DEFAULT_TOOLS[t]) for t in DEFAULT_TOOLS},
+            s4u_enterprise=_name_type(s.get("s4u_name_type", "enterprise")),
+            refresh_workers=max(1, s.getint("refresh_workers", 4)),
         )
+
+
+def _name_type(value: str) -> bool:
+    v = value.strip().lower()
+    if v not in ("enterprise", "principal"):
+        raise ValueError(f"s4u_name_type must be 'enterprise' or 'principal', not {value!r}")
+    return v == "enterprise"
 
 
 class UidMap:
@@ -171,11 +201,11 @@ class UidMap:
 
     def principal(self, uid: int) -> str | None:
         with self._lock:
-            st = self.path.stat()
+            st = self.path.lstat()
             if st.st_mtime != self._mtime:
-                if st.st_uid != 0 or st.st_mode & 0o022:
-                    raise PermissionError(
-                        f"{self.path} must be root-owned and not group/world writable")
+                # Same checks as every other trusted file, including "not a
+                # symlink" (stat() would have followed one).
+                _assert_secure(self.path, is_dir=False, label="map_file")
                 m: dict[int, str] = {}
                 for line in self.path.read_text().splitlines():
                     line = line.split("#", 1)[0].strip()
@@ -199,12 +229,23 @@ class UidMap:
 class TicketManager:
     def __init__(self, cfg: Config, uidmap: UidMap):
         self.cfg, self.map = cfg, uidmap
-        self.krb = Krb5(cfg.krb5_conf)
+        # Kerberos tools run by absolute path; each must be root-owned and not
+        # writable by others (checked on the resolved file, so a root-owned
+        # distro symlink such as an alternatives link is fine).
+        tools = {}
+        for name, path in cfg.tools.items():
+            real = Path(os.path.realpath(path))
+            _assert_secure(real, is_dir=False, label=name)
+            tools[name] = str(real)
+        self.krb = Krb5(cfg.krb5_conf, tools=tools, s4u_enterprise=cfg.s4u_enterprise)
         self._locks: dict[int, threading.Lock] = {}
         self._glock = threading.Lock()
         self._broker_lock = threading.Lock()
         self._active: dict[int, float] = {}
+        self._active_lock = threading.Lock()
         self._last_install: dict[int, float] = {}
+        self._failures: dict[int, tuple[int, float]] = {}   # uid -> (count, retry_at)
+        self._fail_lock = threading.Lock()
         # The broker keytab is the single crown jewel: refuse to run unless it
         # is a root-owned, non-symlink, mode-0600 regular file.
         _assert_secure(cfg.broker_keytab, is_dir=False, label="broker_keytab",
@@ -299,38 +340,91 @@ class TicketManager:
             dest = self.home_ccache(pw)
             if changed or force_install:
                 dest = self._install(pw, cc)
+            self._clear_failure(uid)
             return dest
 
     def touch(self, uid: int) -> None:
-        self._active[uid] = time.time()
+        with self._active_lock:
+            self._active[uid] = time.time()
+
+    # ---- failure backoff (background refresh only) ------------------------
+    def _record_failure(self, uid: int, err: Exception) -> float:
+        transient = getattr(err, "transient", True)
+        first, cap = BACKOFF_TRANSIENT_S if transient else BACKOFF_PERMANENT_S
+        with self._fail_lock:
+            count = self._failures.get(uid, (0, 0.0))[0] + 1
+            delay = min(cap, first * 2 ** (count - 1))
+            self._failures[uid] = (count, time.time() + delay)
+        return delay
+
+    def _clear_failure(self, uid: int) -> None:
+        with self._fail_lock:
+            self._failures.pop(uid, None)
+
+    def _backing_off(self, uid: int) -> bool:
+        with self._fail_lock:
+            f = self._failures.get(uid)
+        return f is not None and time.time() < f[1]
+
+    def _refresh_one(self, uid: int) -> None:
+        if self._backing_off(uid):
+            return
+        try:
+            if self.map.principal(uid):
+                self.ensure(uid)
+        except Exception as e:
+            delay = self._record_failure(uid, e)
+            cat = getattr(e, "category", type(e).__name__)
+            log.error("refresh uid=%d failed (%s; next try in %ds): %s", uid, cat, delay, e)
 
     def _slurm_uids(self) -> set[int]:
         try:
             r = subprocess.run(
                 [self.cfg.squeue, "-h", "-a", "-t", "PD,CF,R,CG", "-o", "%U"],
                 capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                log.warning("squeue exited %d: %s", r.returncode, r.stderr.strip())
+                return set()
             return {int(x) for x in r.stdout.split() if x.isdigit()}
         except Exception as e:
             log.warning("squeue failed: %s", e)
             return set()
 
-    def refresh_loop(self, stop: threading.Event) -> None:
-        while not stop.wait(self.cfg.refresh_interval_s):
-            horizon = time.time() - self.cfg.active_window_s
-            for uid, ts in list(self._active.items()):
-                if ts < horizon:
-                    del self._active[uid]
-                    self.master(uid).unlink(missing_ok=True)
-                    log.info("retired idle master ccache uid=%d", uid)
+    def refresh_pass(self, pool: ThreadPoolExecutor) -> None:
+        horizon = time.time() - self.cfg.active_window_s
+        with self._active_lock:
+            idle = [uid for uid, ts in self._active.items() if ts < horizon]
+            for uid in idle:
+                del self._active[uid]
             uids = set(self._active)
-            if self.cfg.watch_slurm:
-                uids |= self._slurm_uids()
-            for uid in sorted(uids):
+        for uid in idle:
+            self.master(uid).unlink(missing_ok=True)
+            self._clear_failure(uid)
+            log.info("retired idle master ccache uid=%d", uid)
+        if self.cfg.watch_slurm:
+            uids |= self._slurm_uids()
+        if not uids:
+            return
+        # Refresh the broker TGT once up front: if it can't be obtained, every
+        # user would fail the same way, so log it once and skip this pass.
+        try:
+            self._ensure_broker()
+        except Exception as e:
+            log.error("broker TGT unavailable, skipping refresh of %d user(s): %s", len(uids), e)
+            return
+        # Users are refreshed in parallel (per-user locks keep each user's
+        # mint/install serialized), so one slow KDC answer doesn't hold up
+        # everyone else. list() waits for the whole pass to finish.
+        list(pool.map(self._refresh_one, sorted(uids)))
+
+    def refresh_loop(self, stop: threading.Event) -> None:
+        with ThreadPoolExecutor(max_workers=self.cfg.refresh_workers,
+                                thread_name_prefix="refresh") as pool:
+            while not stop.wait(self.cfg.refresh_interval_s):
                 try:
-                    if self.map.principal(uid):
-                        self.ensure(uid)
-                except Exception as e:
-                    log.error("refresh uid=%d: %s", uid, e)
+                    self.refresh_pass(pool)
+                except Exception as e:     # never let the refresh thread die
+                    log.exception("refresh pass failed: %s", e)
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -365,6 +459,10 @@ class Handler(socketserver.StreamRequestHandler):
             except PermissionError as e:
                 self.wfile.write(f"ERR {e}\n".encode())
                 log.warning("denied uid=%d: %s", uid, e)
+            except KrbToolError as e:
+                msg = USER_MESSAGES.get(e.category, "could not obtain ticket")
+                self.wfile.write(f"ERR {msg}\n".encode())
+                log.error("failed uid=%d (%s): %s", uid, e.category, e)
             except Exception as e:
                 self.wfile.write(b"ERR could not obtain ticket\n")
                 log.error("failed uid=%d: %s", uid, e)
@@ -389,6 +487,14 @@ def main(argv: list[str] | None = None) -> None:
     os.umask(0o077)
     cfg = Config.load(args.config)
     tm = TicketManager(cfg, UidMap(cfg.map_file, cfg.realm))
+    # Fail fast on tools that can't do the job (not MIT, or older than 1.19,
+    # which lacks `kvno --out-cache`).
+    try:
+        version = tm.krb.version()
+    except Exception as e:
+        raise SystemExit(f"krb-credd: {e}")
+    log.info("MIT Kerberos %s tools: %s", ".".join(map(str, version)),
+             ", ".join(f"{k}={v}" for k, v in tm.krb.tools.items()))
     # Acquire the broker TGT up front so a bad keytab/principal fails fast; a
     # transient KDC hiccup is non-fatal (the refresh loop and first request
     # retry).
@@ -405,9 +511,10 @@ def main(argv: list[str] | None = None) -> None:
     srv.tm = tm
     srv.sem = threading.BoundedSemaphore(MAX_CLIENTS)
     log.info("listening on %s (shared-home S4U; broker=%s; targets=%s; "
-             "refresh %ds; slurm-watch=%s)", cfg.unix_socket,
+             "refresh %ds x%d workers; slurm-watch=%s; s4u=%s)", cfg.unix_socket,
              cfg.broker_principal, ",".join(cfg.delegate_targets),
-             cfg.refresh_interval_s, cfg.watch_slurm)
+             cfg.refresh_interval_s, cfg.refresh_workers, cfg.watch_slurm,
+             "enterprise" if cfg.s4u_enterprise else "principal")
     try:
         srv.serve_forever()
     finally:

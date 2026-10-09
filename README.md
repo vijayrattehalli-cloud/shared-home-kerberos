@@ -70,11 +70,11 @@ login/broker tier                         shared filesystem        compute fabri
 | `src/krbhpc/get.py` | `krb-get` — ask the daemon to refresh now, print the `KRB5CCNAME` export |
 | `bin/krb-install-ccache` | self-contained helper run **as the user** via `setpriv` (root-squash-safe, atomic) |
 | `src/krbhpc/hive_client.py` | Hive over Kerberos in Python (impyla/GSSAPI) — no JDK, no shim |
-| `src/krbhpc/_krb.py` | durations, `klist` parsing, and kinit/klist/**kvno (S4U)** wrappers |
+| `src/krbhpc/_krb.py` | durations, `klist` parsing (UTC), error classification, MIT version check, and kinit/klist/**kvno (S4U)** wrappers run by absolute path |
 | `slurm/taskprolog.krb.sh` | the one line that exports `KRB5CCNAME` on every node |
 | `config/` | `credd.conf`, `krb5.conf`, `uidmap.conf`, `profile.d` hook |
 | `systemd/krb-credd.service` | run the daemon (sandboxed) |
-| `tests/` | `verify-shared-home.sh` (end-to-end) + `test_krb_helpers.py` + `test_hardening.py` (unit) |
+| `tests/` | `verify-shared-home.sh` (end-to-end, full S4U path) + `test_krb_helpers.py` + `test_daemon.py` + `test_hardening.py` (unit) |
 
 ## Install
 
@@ -85,8 +85,9 @@ pip install '.[hive]'         # + impyla for the Python Hive client
 bin/krb-credd -c /etc/krb-hpc/credd.conf
 ```
 
-Runtime system deps: `python3 >= 3.9`, MIT krb5 client tools (`kinit`, `klist`,
-`kvno`), `setpriv` (util-linux), and the Slurm client (`squeue`) when
+Runtime system deps: `python3 >= 3.9`, MIT krb5 **1.19 or newer** client tools
+(`kinit`, `klist`, `kvno` — 1.19 added `kvno --out-cache`; the daemon checks at
+start-up), `setpriv` (util-linux), and the Slurm client (`squeue`) when
 `watch_slurm` is on.
 
 ## Quickstart
@@ -116,26 +117,28 @@ sbatch hive-jdbc/...               # see hive_client usage in ARCHITECTURE.md §
 ## Test
 
 ```bash
-python3 tests/test_krb_helpers.py                       # unit (no Kerberos needed)
+python3 tests/test_krb_helpers.py                       # parsing, error classes, tool wrapper (no Kerberos)
+python3 tests/test_daemon.py                            # config, refresh backoff, admin scripts
 python3 tests/test_hardening.py                         # fail-closed permission checks
-JAVA_HOME= sudo -E tests/verify-shared-home.sh          # end-to-end (needs MIT krb5 + root)
+sudo MIT_PREFIX=/opt/mitkrb5 KDB_TEST_MODULE_DIR=<krb5-src>/src/plugins/kdb/test \
+     tests/verify-shared-home.sh                        # end-to-end (MIT KDC + root)
 ```
 
-The end-to-end test stands up a throwaway MIT realm and runs the **real Python
-daemon**. **Section 1** asserts the daemon obtains its broker TGT from one keytab
-and issues a well-formed S4U2Self+S4U2Proxy request; **Section 2** asserts
-install-as-user into shared home (0600), a cache of service tickets with no TGT,
-all four simulated compute nodes reading the one file, service accept +
-`auth_to_local → jdoe`, and the re-mint/refresh path. Recorded output:
-[`tests/verify-shared-home.output.txt`](tests/verify-shared-home.output.txt).
+The end-to-end test runs the **real daemon** against a throwaway MIT KDC that
+uses MIT's *test* database module, which — unlike the default file database —
+can hold a constrained-delegation allow-list (the stand-in for AD's
+`msDS-AllowedToDelegateTo`). So the **complete** path runs: broker TGT from one
+keytab → S4U2Self → S4U2Proxy → install as the user (0600, service tickets only)
+→ four simulated compute nodes → the service accepts the ticket as the real
+user → unattended re-mint → atomic broker renewal. It also checks the
+refusals and safeguards: MIT older than 1.19, a writable Kerberos tool, an
+un-enrolled user, a non-delegable user (refused with a clear message and backed
+off in the background), a backend not on the allow-list, and a hostile
+`KRB5CCNAME`/`KRB5_TRACE`/`KRB5_CONFIG`/`LC_ALL`/`TZ` environment. Recorded
+output: [`tests/verify-shared-home.output.txt`](tests/verify-shared-home.output.txt).
 
-> **Test-harness note:** the S4U2Proxy *authorization* list
-> (`msDS-AllowedToDelegateTo`) can only be stored by Active Directory or an
-> LDAP-backed MIT KDC; the file/DB2 KDC used in the test cannot, so the proxy leg
-> returns "constrained delegation failed". Section 1 asserts exactly that
-> (proving the request is correct and only the AD allow-list is absent); on real
-> AD the mint succeeds and the two sections join into one unbroken path. See
-> `ARCHITECTURE.md` §11.
+> Distribution packages don't ship MIT's test KDB module (`test.so`); the
+> script's header shows how to build MIT krb5 from source to get it.
 
 ## Trade-offs
 

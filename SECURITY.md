@@ -68,11 +68,19 @@ change and rejected unless root-owned and not group/world writable. Covered by
 [`tests/test_hardening.py`](tests/test_hardening.py) (9 cases).
 
 ### 3.4 Environment-based code injection into the krb5 tools
-`kinit`/`klist`/`kvno` run with `LD_PRELOAD`, `LD_AUDIT`, `KRB5CCNAME`,
-`KRB5_KTNAME`, and `KRB5_TRACE` scrubbed (every call passes `-c`/`-t`/`--out-cache`
-explicitly), with `KRB5_CONFIG` and `LC_ALL=C` pinned. `LD_LIBRARY_PATH` is
-preserved for sites with a non-standard krb5 prefix — acceptable because the
-daemon's environment is controlled by systemd, not by any user.
+`kinit`/`klist`/`kvno` are run by **absolute path** (configurable in
+`credd.conf`, never looked up on `PATH`); at start-up each must resolve to a
+root-owned file that others can't write, and `klist -V` must report MIT 1.19+.
+They run with `LD_PRELOAD`, `LD_AUDIT`, `KRB5CCNAME`, `KRB5_KTNAME`,
+`KRB5_CLIENT_KTNAME`, `KRB5_TRACE`, `KRB5_KDC_PROFILE`, `KRB5RCACHEDIR`,
+`KRB5RCACHETYPE`, `KRB5_CONFIG`, `TZ`, `LANG`, `LANGUAGE` and all `LC_*`
+scrubbed (every call passes `-c`/`-t`/`--out-cache` explicitly), then
+`KRB5_CONFIG`, `LC_ALL=C` and `TZ=UTC0` pinned. `LD_LIBRARY_PATH` is preserved
+for sites with a non-standard krb5 prefix — acceptable because the daemon's
+environment is controlled by systemd, not by any user. The end-to-end test
+starts the daemon with hostile values for these and checks they have no effect.
+`kvno` gets a throwaway copy of the broker cache, so the real one never
+collects users' service tickets.
 
 ### 3.5 Local denial of service
 `MAX_CLIENTS` (32) bounds concurrent requests with a `BoundedSemaphore` (shed

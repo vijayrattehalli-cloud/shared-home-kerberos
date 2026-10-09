@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-krb-get -- ask krb-credd to (re)install your TGT in ~/.krb5 and print the export.
+krb-get -- ask krb-credd to (re)install your service tickets in ~/.krb5 and print
+the export. (You get service tickets for the allow-listed backends, not a TGT.)
 
     eval "$(krb-get)"      # sets KRB5CCNAME=FILE:$HOME/.krb5/krb5cc_hpc
 """

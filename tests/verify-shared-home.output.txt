@@ -1,13 +1,36 @@
-# verify-shared-home.sh output (Python S4U edition; recorded 2026-10-06T12:13Z)
-# Real Python krb-credd daemon (constrained delegation) vs an MIT KDC standing in for AD.
+# verify-shared-home.sh output (recorded 2026-10-09T21:37Z)
+# Real krb-credd daemon running the MIT 1.20.1 tools (kinit/klist/kvno) by absolute path, against an
+# MIT 1.20.1 KDC using the test KDB module (constrained-delegation allow-list). Default s4u_name_type
+# (enterprise, kvno -U); the same run with S4U_NAME_TYPE=principal (kvno -I) also passes.
 
---- Section 1: broker credential + S4U request (real daemon) ---
-PASS  broker obtained its own TGT from ONE keytab (unattended-renewal engine)
-PASS  daemon issued a well-formed S4U2Self+S4U2Proxy request (KDC gated it: DB2 has no msDS-AllowedToDelegateTo; AD would authorize)
---- Section 2: shared-home propagation / install / refresh (mechanism) ---
-PASS  ticket cache installed into shared home, owned by shuser, mode 600
-PASS  cache holds the backend SERVICE ticket (no TGT) -- S4U least privilege
+--- Section 0: start-up checks ---
+PASS  refuses to start with MIT Kerberos older than 1.19 (no kvno --out-cache)
+PASS  refuses a Kerberos tool that others can write
+PASS  started with absolute tool paths and logged the MIT version
+--- Section 1: the daemon mints, end to end (kvno -U ... -P) ---
+PASS  krb-get returned the shared-home cache path
+PASS  broker obtained its own TGT from ONE keytab (kinit -k)
+PASS  broker cache holds only the broker's TGT (kvno ran on a throwaway copy)
+PASS  cache installed into shared home as shuser, mode 600
+PASS  cache is for the REAL user (shuser@ENT.TEST), via S4U2Self
+PASS  cache holds hive and hdfs SERVICE tickets via S4U2Proxy (allow-listed by the KDC)
+PASS  user cache contains NO TGT (least privilege)
+PASS  every mint asks the KDC for NEW tickets (none reused from a cache)
+PASS  broker cache still holds only the broker's TGT after repeated mints
+--- Section 2: compute nodes and the backend service ---
 PASS  all 4 simulated compute nodes used the in-home service ticket
-PASS  service accepted ticket; auth_to_local -> 'shuser' (real user, no hpc- prefix)
-PASS  re-mint/refresh path re-installs a usable in-home cache atomically
-ALL CHECKS PASSED -- Python shared-home (S4U): one broker credential, per-user
+PASS  hive service accepted the delegated ticket as shuser@ENT.TEST
+--- Section 3: unattended refresh, backoff, renewal ---
+PASS  squeue-watch refresh loop re-minted and re-installed with no user action
+PASS  re-installed cache is usable (atomic replace)
+PASS  non-delegable user failed once in the background, classified, then backed off (not retried every pass)
+PASS  broker TGT renewal is atomic (renews a copy, renames it into place)
+--- Section 4: what must be refused ---
+PASS  un-enrolled user refused (identity from SO_PEERCRED)
+PASS  non-delegable user gets no tickets and a clear message: 'your account cannot be delegated to the HPC services; contact the HPC admins'
+PASS  backend NOT on the KDC allow-list is refused (web/vm)
+PASS  hostile KRB5CCNAME/KRB5_TRACE/KRB5_CONFIG/LC_ALL/TZ in the daemon's environment had no effect
+
+ALL CHECKS PASSED -- shared-home: one broker keytab, per-user service tickets
+minted by S4U2Self+S4U2Proxy through the MIT tools, one continuously-fresh cache
+visible on every node, the KDC allow-list enforced, and failures classified.

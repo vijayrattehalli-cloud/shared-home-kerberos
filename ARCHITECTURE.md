@@ -176,8 +176,10 @@ maximum simplicity — and its defining trade-off (§8).
   runs the periodic refresh pass. Standard library only; no third-party deps.
 - **`credd.TicketManager`** — the credential lifecycle:
   - *broker TGT* (`_ensure_broker`) — `kinit -f -r <renew> -l <life> -k -t
-    <broker_keytab> <broker_principal>`; renews with `kinit -R` while possible,
-    re-`kinit`s from the keytab past the renew limit. One credential, refreshed
+    <broker_keytab> <broker_principal>`; renews with `kinit -R` while possible
+    (on a private copy that is then renamed into place, because `kinit -R`
+    rewrites the file it renews), re-`kinit`s from the keytab past the renew
+    limit. One credential, refreshed
     unattended; everything else rides on it.
   - *mint* (`_mint`) — constrained delegation: `kvno -c FILE:<broker_cc>
     --out-cache FILE:<tmp> -U <user> -P <spn>…` performs S4U2Self then S4U2Proxy
@@ -191,10 +193,24 @@ maximum simplicity — and its defining trade-off (§8).
   map, re-read on mtime change (enrollment needs no restart). Refuses to load
   the file unless it is root-owned and not group/world writable.
 - **`_krb.py`** — `duration_seconds`, `klist` parsing (`parse_klist` for the
-  broker TGT, `earliest_expiry` for a service-ticket cache), and thin
-  `kinit`/`klist`/`kvno` wrappers that scrub injection-vector env vars and pin
-  `KRB5_CONFIG` and `LC_ALL=C`. Pure functions are unit-tested in
-  `tests/test_krb_helpers.py`.
+  broker TGT, `earliest_expiry` for a service-ticket cache), `classify_error`
+  (maps tool stderr to `kdc_unreachable`, `timeout`, `clock_skew`,
+  `not_delegable`, `unknown_principal`, `broker_key`, `bad_cache`, `other`), an
+  MIT version check (`klist -V`, ≥ 1.19), and thin `kinit`/`klist`/`kvno`
+  wrappers. Tools run by **absolute path** (configurable; each must be
+  root-owned and not writable by others) with injection-vector and Kerberos
+  variables scrubbed and `KRB5_CONFIG`, `LC_ALL=C` and `TZ=UTC0` pinned, so
+  `klist` times are parsed as UTC (no daylight-saving ambiguity). `kvno` runs
+  against a throwaway copy of the broker cache, because it stores every
+  S4U2Proxy ticket in the cache it is given even with `--out-cache`.
+  Unit-tested in `tests/test_krb_helpers.py`.
+- **Refresh loop** — users are refreshed in parallel (`refresh_workers`,
+  default 4); the broker TGT is checked once per pass and the pass is skipped,
+  with one log line, if it can't be obtained. A user whose background mint
+  fails is backed off (transient errors from 1 to 15 minutes, errors needing an
+  admin from 15 to 60 minutes) instead of being retried every pass; a `krb-get`
+  always tries immediately. Users get a plain-language reason for the common
+  failures; details stay in the log.
 - **`get.py` / `install_ccache.py`** — the `krb-get` client and the
   self-contained install helper (the helper imports nothing beyond the stdlib,
   because the daemon runs it from a libexec path far from the package).
@@ -424,7 +440,8 @@ Revoking **everyone** is one action: rotate or disable the broker account.
 |---|---|
 | User not enrolled (`uidmap` miss) | `krb-get` returns an error; nothing written |
 | User account not delegation-eligible (Protected Users / sensitive) | S4U2Proxy fails at the KDC; logged; no cache written for that user |
-| Backend SPN not in `msDS-AllowedToDelegateTo` | S4U2Proxy returns "constrained delegation failed"; logged |
+| Backend SPN not in `msDS-AllowedToDelegateTo` | S4U2Proxy refused by the KDC; logged as `not_delegable`; background retries backed off |
+| MIT tools older than 1.19, not MIT, or writable by others | daemon refuses to start, saying why |
 | Broker keytab missing / not root:0600 | daemon refuses to start (fail-closed) |
 | Broker TGT expired, KDC reachable | re-`kinit` from the keytab on next mint/refresh |
 | Service ticket near expiry | re-minted via a fresh S4U call |
@@ -453,25 +470,27 @@ Revoking **everyone** is one action: rotate or disable the broker account.
 
 ## 11. What is tested, and what is not
 
-`tests/verify-shared-home.sh` runs the **real Python daemon** against an MIT KDC
-standing in for AD (`tests/verify-shared-home.output.txt`):
+`tests/verify-shared-home.sh` runs the **real daemon** against an MIT KDC
+standing in for AD (`tests/verify-shared-home.output.txt`). The KDC uses MIT's
+*test* KDB module, which can hold a constrained-delegation allow-list (the
+stand-in for `msDS-AllowedToDelegateTo`), so the **whole** path is exercised:
 
-- **Section 1** — the daemon obtains the **broker TGT from one keytab** (the
-  unattended-renewal engine) and issues a well-formed **S4U2Self+S4U2Proxy**
-  request.
-- **Section 2** — install-as-user into shared home (0600, owned by the user), a
-  cache of **service tickets with no TGT**, all four simulated compute nodes
-  reading the one file, service accept + `auth_to_local → jdoe`, and the
-  re-mint/refresh path.
+- **Section 0** — start-up refuses MIT older than 1.19 and a Kerberos tool that
+  others can write; logs the MIT version and absolute tool paths.
+- **Section 1** — `krb-get` drives the daemon to get the broker TGT from one
+  keytab, perform S4U2Self + S4U2Proxy, and install a cache of **service
+  tickets with no TGT** for the real user into shared home (0600). Every mint
+  gets new tickets from the KDC, and the broker cache keeps only its TGT.
+- **Section 2** — four simulated compute nodes use the one in-home ticket, and a
+  real GSSAPI service accepts it as the real user.
+- **Section 3** — the squeue-watch loop re-mints and re-installs unattended; a
+  non-delegable user fails once in the background, is classified, and is backed
+  off; broker renewal is atomic.
+- **Section 4** — refusals: un-enrolled user; non-delegable user (with a clear
+  message); backend not on the allow-list; hostile environment variables.
 
-**Known test-harness limitation:** the S4U2Proxy *authorization* list
-(`msDS-AllowedToDelegateTo`) can only be stored by **Active Directory** or an
-LDAP-backed MIT KDC. The file/DB2 KDC used in the test **cannot** store it, so
-the proxy leg returns "constrained delegation failed". Section 1 asserts exactly
-that — proving the broker auth and the S4U request are correct and that only the
-AD-side allow-list is absent — and Section 2 drives the propagation path with an
-equivalent real-user service-ticket cache. On real AD the daemon's mint produces
-that cache and the two sections join into one unbroken path. **Not exercised
-here:** real AD delegation authorization, a real shared filesystem with
-`root_squash`/`sec=krb5p`, real Slurm, and a live HiveServer2 — all
-site-integration points to confirm in a lab.
+It passes with both `s4u_name_type = enterprise` (`kvno -U`) and `principal`
+(`kvno -I`). **Not exercised here:** real Active Directory (its PAC and
+`msDS-AllowedToDelegateTo` evaluation, and how it resolves enterprise names), a
+real shared filesystem with `root_squash`/`sec=krb5p`, real Slurm, and a live
+HiveServer2 — all site-integration points to confirm in a lab.

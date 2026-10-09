@@ -4,7 +4,7 @@
 - `src/krbhpc/` — the Python package (daemon, client, install helper, Hive client, helpers)
 - `bin/` — runnable wrappers (also installed as console scripts via `pip install .`)
 - `config/`, `slurm/`, `systemd/`, `admin/` — deployment assets
-- `tests/` — unit tests (`test_krb_helpers.py`) and the end-to-end `verify-shared-home.sh`
+- `tests/` — unit tests (`test_krb_helpers.py`, `test_daemon.py`, `test_hardening.py`) and the end-to-end `verify-shared-home.sh`
 
 ## Install / run
 ```bash
@@ -16,11 +16,13 @@ bin/krb-credd -c /etc/krb-hpc/credd.conf
 
 ## Test
 ```bash
-python3 tests/test_krb_helpers.py                 # pure-function unit tests, no Kerberos
-sudo -E tests/verify-shared-home.sh               # end-to-end; needs MIT krb5 tools + root
+python3 tests/test_krb_helpers.py                 # parsing, error classes, tool wrapper; no Kerberos
+python3 tests/test_daemon.py                      # config, backoff, admin scripts (root for some cases)
+python3 tests/test_hardening.py                   # fail-closed permission checks
+sudo MIT_PREFIX=... KDB_TEST_MODULE_DIR=... tests/verify-shared-home.sh   # end-to-end; MIT KDC + root
 ```
 The end-to-end test stands up a throwaway MIT realm and runs the real daemon;
-it touches nothing outside its temp dir and a transient test user.
+it touches nothing outside its temp dirs and three transient test users.
 
 ## Scope & style
 - This repo is the **shared-home** design only. Keep PRs focused on it;

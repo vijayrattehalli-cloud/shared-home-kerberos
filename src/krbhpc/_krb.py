@@ -1,17 +1,27 @@
 """Shared helpers for the krbhpc shared-home package: durations, klist parsing,
-and subprocess wrappers around the MIT Kerberos client tools.
+error classification, and subprocess wrappers around the MIT Kerberos client
+tools (kinit, klist, kvno).
 
 No third-party dependencies; standard library only.
 """
 from __future__ import annotations
 
+import calendar
+import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 
 _DUR = re.compile(r"(\d+)([smhd]?)")
 _UNIT = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
+
+# `kvno --out-cache` (used for the S4U mint) first appeared in MIT krb5 1.19.
+MIN_MIT_VERSION = (1, 19)
+
+DEFAULT_TOOLS = {"kinit": "/usr/bin/kinit", "klist": "/usr/bin/klist", "kvno": "/usr/bin/kvno"}
 
 
 def duration_seconds(text: str) -> int:
@@ -29,10 +39,12 @@ class TgtTimes:
 
 
 def _parse_klist_time(date: str, clock: str) -> float:
-    # MIT klist prints MM/DD/YY HH:MM:SS under LC_ALL=C.
+    # The tools run with LC_ALL=C and TZ=UTC0, so klist prints MM/DD/YY
+    # HH:MM:SS in UTC. Converting with timegm (not local-time mktime) avoids
+    # the ambiguous hour when daylight saving time ends.
     for fmt in ("%m/%d/%y %H:%M:%S", "%m/%d/%Y %H:%M:%S"):
         try:
-            return time.mktime(time.strptime(f"{date} {clock}", fmt))
+            return float(calendar.timegm(time.strptime(f"{date} {clock}", fmt)))
         except ValueError:
             continue
     raise ValueError(f"unparseable klist time: {date} {clock}")
@@ -73,31 +85,112 @@ def earliest_expiry(output: str) -> float | None:
     return earliest
 
 
+def parse_mit_version(text: str) -> tuple[int, ...] | None:
+    """'Kerberos 5 version 1.20.1' (MIT `klist -V`) -> (1, 20, 1).
+    Returns None for anything else (e.g. Heimdal)."""
+    m = re.search(r"Kerberos 5 version (\d+)\.(\d+)(?:\.(\d+))?", text)
+    if not m:
+        return None
+    return tuple(int(x) for x in m.groups() if x is not None)
+
+
+# --------------------------------------------------------------- errors
+# Failure categories, from the MIT error messages the tools print. Used for
+# logging/alerting and to decide whether a retry is worthwhile.
+_CATEGORIES = [
+    ("kdc_unreachable", ("cannot contact any kdc", "cannot find kdc", "connection refused",
+                         "resource temporarily unavailable", "timed out")),
+    ("clock_skew", ("clock skew too great",)),
+    ("not_delegable", ("constrained delegation failed", "kdc can't fulfill requested option",
+                       "kdc policy rejects request")),
+    ("unknown_principal", ("not found in kerberos database",)),
+    ("broker_key", ("key table entry not found", "key table file", "keytab contains no suitable keys",
+                    "preauthentication failed", "password incorrect", "no suitable keys")),
+    ("bad_cache", ("no credentials cache found", "credentials cache file", "matching credential not found",
+                   "ticket expired")),
+]
+# Categories a later retry might fix on its own; the others need an admin.
+TRANSIENT = frozenset({"kdc_unreachable", "timeout", "bad_cache"})
+
+
+def classify_error(text: str) -> str:
+    """Map a Kerberos tool's stderr to a coarse failure category."""
+    low = text.lower()
+    for cat, needles in _CATEGORIES:
+        if any(n in low for n in needles):
+            return cat
+    return "other"
+
+
+class KrbToolError(RuntimeError):
+    """A Kerberos command failed. `category` is from classify_error()."""
+
+    def __init__(self, tool: str, what: str, detail: str, category: str | None = None):
+        self.tool, self.detail = tool, detail
+        self.category = category or classify_error(detail)
+        super().__init__(f"{what} [{self.category}]: {detail}")
+
+    @property
+    def transient(self) -> bool:
+        return self.category in TRANSIENT
+
+
 class Krb5:
-    """Thin wrapper over kinit/klist with a pinned config and C locale."""
+    """Thin wrapper over kinit/klist/kvno with pinned paths, config, locale and
+    time zone."""
 
     # Variables scrubbed from the Kerberos tools' environment: the arbitrary-
     # code dynamic-linker vectors, and any inherited credential-cache / keytab
-    # pointers (every call passes -c / -t explicitly, so these must not leak
-    # in). LD_LIBRARY_PATH is intentionally preserved: some sites install MIT
-    # krb5 under a non-standard prefix and rely on it.
-    _SCRUB = ("LD_PRELOAD", "LD_AUDIT", "KRB5CCNAME", "KRB5_KTNAME", "KRB5_TRACE")
+    # / config pointers (every call passes -c / -t explicitly and KRB5_CONFIG
+    # is pinned, so these must not leak in). LD_LIBRARY_PATH is intentionally
+    # preserved: some sites install MIT krb5 under a non-standard prefix.
+    _SCRUB = ("LD_PRELOAD", "LD_AUDIT", "KRB5CCNAME", "KRB5_KTNAME", "KRB5_CLIENT_KTNAME",
+              "KRB5_TRACE", "KRB5_KDC_PROFILE", "KRB5RCACHEDIR", "KRB5RCACHETYPE",
+              "KRB5_CONFIG", "TZ", "LANG", "LANGUAGE")
+    _SCRUB_PREFIXES = ("LC_",)
 
-    def __init__(self, krb5_conf: str, extra_env: dict | None = None):
-        import os
-        # Start from the daemon's (systemd-controlled) environment so TZ and
-        # the standard paths are preserved, then remove the injection vectors
-        # and pin the config and C locale (stable date parsing).
-        env = {k: v for k, v in os.environ.items() if k not in self._SCRUB}
+    def __init__(self, krb5_conf: str, extra_env: dict | None = None,
+                 tools: dict | None = None, s4u_enterprise: bool = True):
+        # Start from the daemon's (systemd-controlled) environment so the
+        # standard paths are preserved, then remove the injection vectors and
+        # pin the config, C locale and UTC (stable, unambiguous date parsing).
+        env = {k: v for k, v in os.environ.items()
+               if k not in self._SCRUB and not k.startswith(self._SCRUB_PREFIXES)}
         env["KRB5_CONFIG"] = krb5_conf
         env["LC_ALL"] = "C"
+        env["TZ"] = "UTC0"
         if extra_env:
             env.update(extra_env)
         self.env = env
+        # Tools are run by absolute path, never looked up on PATH.
+        self.tools = dict(DEFAULT_TOOLS, **(tools or {}))
+        for name, path in self.tools.items():
+            if not os.path.isabs(path):
+                raise ValueError(f"{name} must be an absolute path, got {path!r}")
+        # kvno -U treats the user as an enterprise name (AD resolves UPNs and
+        # sAMAccountNames); -I uses a plain principal name.
+        self.s4u_flag = "-U" if s4u_enterprise else "-I"
 
-    def run(self, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
-        return subprocess.run(args, env=self.env, capture_output=True,
-                              text=True, timeout=timeout)
+    def run(self, tool: str, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run([self.tools[tool], *args], env=self.env,
+                                  capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            raise KrbToolError(tool, f"{tool} timed out after {timeout}s",
+                               "no answer from the KDC in time", "timeout") from e
+
+    def version(self) -> tuple[int, ...]:
+        """MIT version of the configured tools; raises if not MIT >= 1.19."""
+        r = self.run("klist", "-V")
+        v = parse_mit_version(r.stdout + r.stderr)
+        if v is None:
+            raise RuntimeError(f"{self.tools['klist']} is not MIT Kerberos "
+                               f"(klist -V said: {(r.stdout + r.stderr).strip()!r})")
+        if v[:2] < MIN_MIT_VERSION:
+            raise RuntimeError(
+                f"MIT Kerberos {'.'.join(map(str, v))} is too old: kvno --out-cache "
+                f"needs {'.'.join(map(str, MIN_MIT_VERSION))} or newer")
+        return v
 
     def klist_times(self, ccache: str) -> TgtTimes | None:
         r = self.run("klist", "-c", f"FILE:{ccache}")
@@ -118,25 +211,60 @@ class Krb5:
         r = self.run("kinit", "-f", "-r", renew_lifetime, "-l", lifetime,
                      "-k", "-t", keytab, "-c", f"FILE:{ccache}", principal)
         if r.returncode != 0:
-            raise RuntimeError(f"kinit failed for {principal}: {r.stderr.strip()}")
+            raise KrbToolError("kinit", f"kinit failed for {principal}", r.stderr.strip())
 
     def kinit_renew(self, ccache: str) -> bool:
-        r = self.run("kinit", "-R", "-c", f"FILE:{ccache}")
-        return r.returncode == 0
+        """Renew the TGT in `ccache` WITHOUT rewriting it in place: `kinit -R`
+        re-initializes the file it renews, so renew a private copy and rename
+        it over the original. A kvno reading the broker cache at the same
+        moment then sees the old or the new cache, never a half-written one."""
+        tmp = f"{ccache}.renew"
+        try:
+            shutil.copyfile(ccache, tmp)
+            os.chmod(tmp, 0o600)
+            r = self.run("kinit", "-R", "-c", f"FILE:{tmp}")
+            if r.returncode != 0:
+                return False
+            os.replace(tmp, ccache)
+            return True
+        except (OSError, KrbToolError):
+            return False
+        finally:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
 
     def s4u_mint(self, broker_ccache: str, for_user: str, targets: list[str],
                  out_ccache: str) -> None:
         """Constrained delegation: using the broker's TGT in `broker_ccache`,
         obtain SERVICE tickets to each SPN in `targets` on behalf of `for_user`
-        (S4U2Self + S4U2Proxy, i.e. `kvno -U <user> -P ...`) and write them to
-        `out_ccache`. No TGT is produced -- only tickets to the allow-listed
-        backends. Requires AD's msDS-AllowedToDelegateTo (or an LDAP-backed MIT
-        KDC) to authorize the proxy leg; a file/DB2 KDC cannot store the list
-        and returns 'constrained delegation failed'."""
-        r = self.run("kvno", "-c", f"FILE:{broker_ccache}",
-                     "--out-cache", f"FILE:{out_ccache}",
-                     "-U", for_user, "-P", *targets)
+        (S4U2Self + S4U2Proxy, i.e. `kvno -U|-I <user> -P ...`) and write them
+        to `out_ccache`. No TGT is produced -- only tickets to the allow-listed
+        backends. Requires AD's msDS-AllowedToDelegateTo (or an MIT KDC whose
+        database can hold a delegation allow-list) for the proxy leg.
+
+        kvno honors --out-cache for S4U2Self but still stores each S4U2Proxy
+        ticket in the cache it was given (MIT kvno.c passes only
+        KRB5_GC_CANONICALIZE to krb5_get_credentials_for_proxy). So kvno gets a
+        private, throwaway COPY of the broker cache: the real one keeps only
+        the broker's TGT, never accumulates every user's service tickets, and
+        parallel mints never write to the same file."""
+        out_dir = os.path.dirname(os.path.abspath(out_ccache))
+        fd, scratch = tempfile.mkstemp(prefix=".broker.", suffix=".cc", dir=out_dir)
+        try:
+            with os.fdopen(fd, "wb") as dst, open(broker_ccache, "rb") as src:
+                shutil.copyfileobj(src, dst)
+            r = self.run("kvno", "-c", f"FILE:{scratch}",
+                         "--out-cache", f"FILE:{out_ccache}",
+                         self.s4u_flag, for_user, "-P", *targets)
+        except OSError as e:
+            raise KrbToolError("kvno", "cannot read the broker cache", str(e), "bad_cache") from e
+        finally:
+            try:
+                os.unlink(scratch)
+            except FileNotFoundError:
+                pass
         if r.returncode != 0:
             msg = (r.stderr.strip() or r.stdout.strip() or "unknown error")
-            raise RuntimeError(
-                f"S4U mint failed for {for_user} -> {targets}: {msg}")
+            raise KrbToolError("kvno", f"S4U mint failed for {for_user} -> {targets}", msg)

@@ -1,0 +1,15 @@
+ok   test_classify_error
+ok   test_duration
+ok   test_earliest_expiry_empty
+ok   test_earliest_expiry_service_cache
+ok   test_environment_is_scrubbed_and_pinned
+ok   test_parse_klist_no_tgt
+ok   test_parse_klist_with_renew
+ok   test_parse_mit_version
+ok   test_renew_is_atomic_and_never_touches_original_on_failure
+ok   test_s4u_flag_and_error_category
+ok   test_times_are_utc_not_local
+ok   test_tools_must_be_absolute
+ok   test_version_gate
+
+all 13 helper tests passed
