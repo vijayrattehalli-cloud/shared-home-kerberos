@@ -138,12 +138,26 @@ class Config:
         # Refuse a config that an attacker could have tampered with.
         _assert_secure(Path(path), is_dir=False, label="config")
         cp = configparser.ConfigParser(inline_comment_prefixes=(";", "#"))
-        cp.read(path)
+        with open(path) as fh:
+            cp.read_file(fh)
+        if not cp.has_section("broker"):
+            raise ValueError(f"{path}: missing [broker] section")
         s = cp["broker"]
+        unknown = sorted(set(s) - KNOWN_KEYS)
+        if unknown:   # most likely a typo that would otherwise be ignored silently
+            log.warning("%s: ignoring unknown option(s): %s", path, ", ".join(unknown))
+        missing = [k for k in ("realm", "broker_principal", "delegate_targets") if not s.get(k)]
+        if missing:
+            raise ValueError(f"{path}: required option(s) missing: {', '.join(missing)}")
+
+        def dur(key: str, default: str) -> int:
+            try:
+                return duration_seconds(s.get(key, default))
+            except ValueError as e:
+                raise ValueError(f"{path}: {key}: {e}") from None
+
         realm = s.get("realm")
         targets = [t for t in s.get("delegate_targets", "").replace(",", " ").split()]
-        if not targets:
-            raise ValueError("delegate_targets must list at least one backend SPN")
         # Qualify any bare SPN with the realm so AD/auth all agree on the name.
         targets = [t if "@" in t else f"{t}@{realm}" for t in targets]
         return Config(
@@ -162,16 +176,25 @@ class Config:
             setpriv=s.get("setpriv", "/usr/bin/setpriv"),
             broker_lifetime=s.get("broker_lifetime", "10h"),
             broker_renew=s.get("broker_renew", "7d"),
-            renew_margin_s=duration_seconds(s.get("renew_margin", "1h")),
-            refresh_interval_s=duration_seconds(s.get("refresh_interval", "5m")),
-            active_window_s=duration_seconds(s.get("active_window", "7d")),
+            renew_margin_s=dur("renew_margin", "1h"),
+            refresh_interval_s=dur("refresh_interval", "5m"),
+            active_window_s=dur("active_window", "7d"),
             watch_slurm=s.getboolean("watch_slurm", True),
             squeue=s.get("squeue", "/usr/bin/squeue"),
-            min_reissue_s=duration_seconds(s.get("min_reissue_interval", "10s")),
+            min_reissue_s=dur("min_reissue_interval", "10s"),
             tools={t: s.get(t, DEFAULT_TOOLS[t]) for t in DEFAULT_TOOLS},
             s4u_enterprise=_name_type(s.get("s4u_name_type", "enterprise")),
             refresh_workers=max(1, s.getint("refresh_workers", 4)),
         )
+
+
+KNOWN_KEYS = frozenset({
+    "realm", "krb5_conf", "broker_principal", "broker_keytab", "broker_ccache",
+    "delegate_targets", "state_dir", "map_file", "unix_socket", "ccache_path",
+    "install_helper", "setpriv", "broker_lifetime", "broker_renew", "renew_margin",
+    "min_reissue_interval", "refresh_interval", "refresh_workers", "active_window",
+    "watch_slurm", "squeue", "s4u_name_type", *DEFAULT_TOOLS,
+})
 
 
 def _name_type(value: str) -> bool:
@@ -257,6 +280,23 @@ class TicketManager:
         # non-writable, or a local attacker who could edit it would run code
         # as any user. (setpriv is a trusted system binary; left as-is.)
         _assert_secure(Path(cfg.install_helper), is_dir=False, label="install_helper")
+        self._seed_active()
+
+    def _seed_active(self) -> None:
+        """After a restart, resume refreshing users who were active: every
+        enrolled user with a master cache in state_dir (masters are deleted
+        when a user goes idle). The file's mtime -- the last mint -- stands in
+        for their last krb-get, so at worst they are retired a little early
+        and come back on their next login."""
+        for f in self.cfg.state_dir.glob("krb5cc_*"):
+            uid = f.name[len("krb5cc_"):]
+            if uid.isdigit():
+                try:
+                    self._active[int(uid)] = f.stat().st_mtime
+                except OSError:
+                    pass
+        if self._active:
+            log.info("resuming refresh for %d previously active user(s)", len(self._active))
 
     def master(self, uid: int) -> Path:
         return self.cfg.state_dir / f"krb5cc_{uid}"
@@ -338,7 +378,7 @@ class TicketManager:
                 changed = True
                 log.info("minted service tickets uid=%d principal=%s", uid, principal)
             dest = self.home_ccache(pw)
-            if changed or force_install:
+            if changed or force_install or _missing(dest):
                 dest = self._install(pw, cc)
             self._clear_failure(uid)
             return dest
@@ -366,12 +406,18 @@ class TicketManager:
             f = self._failures.get(uid)
         return f is not None and time.time() < f[1]
 
+    def _enrolled(self, uid: int) -> bool:
+        try:
+            return bool(self.map.principal(uid))
+        except Exception as e:
+            log.error("cannot read %s: %s", self.cfg.map_file, e)
+            return False
+
     def _refresh_one(self, uid: int) -> None:
         if self._backing_off(uid):
             return
         try:
-            if self.map.principal(uid):
-                self.ensure(uid)
+            self.ensure(uid)
         except Exception as e:
             delay = self._record_failure(uid, e)
             cat = getattr(e, "category", type(e).__name__)
@@ -399,10 +445,15 @@ class TicketManager:
             uids = set(self._active)
         for uid in idle:
             self.master(uid).unlink(missing_ok=True)
+            self.krb.forget(str(self.master(uid)))
             self._clear_failure(uid)
+            with self._glock:
+                self._locks.pop(uid, None)
+            self._last_install.pop(uid, None)
             log.info("retired idle master ccache uid=%d", uid)
         if self.cfg.watch_slurm:
             uids |= self._slurm_uids()
+        uids = {u for u in uids if self._enrolled(u)}
         if not uids:
             return
         # Refresh the broker TGT once up front: if it can't be obtained, every
@@ -420,11 +471,26 @@ class TicketManager:
     def refresh_loop(self, stop: threading.Event) -> None:
         with ThreadPoolExecutor(max_workers=self.cfg.refresh_workers,
                                 thread_name_prefix="refresh") as pool:
-            while not stop.wait(self.cfg.refresh_interval_s):
+            while True:   # first pass right away, then every refresh_interval
                 try:
                     self.refresh_pass(pool)
                 except Exception as e:     # never let the refresh thread die
                     log.exception("refresh pass failed: %s", e)
+                if stop.wait(self.cfg.refresh_interval_s):
+                    return
+
+
+def _missing(path: Path) -> bool:
+    """True only if the user's cache is known to be gone (e.g. deleted by the
+    user), so the background refresh puts it back. If root can't look
+    (root-squashed NFS), assume it is still there."""
+    try:
+        os.stat(path)
+        return False
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -476,40 +542,110 @@ class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     block_on_close = False
 
 
+def check(cfg_path: str, user: str | None) -> int:
+    """`krb-credd --check [--user NAME]`: validate a deployment without
+    starting the daemon or touching anyone's home directory. Each step prints
+    PASS/FAIL with the reason; exit status 1 if anything failed."""
+    failed = 0
+
+    def step(label, fn):
+        nonlocal failed
+        try:
+            detail = fn()
+            print(f"PASS  {label}" + (f": {detail}" if detail else ""))
+            return True
+        except Exception as e:
+            failed += 1
+            print(f"FAIL  {label}: {e}")
+            return False
+
+    box = {}
+    if not step("config " + cfg_path, lambda: box.setdefault("cfg", Config.load(cfg_path)) and None):
+        return 1
+    cfg = box["cfg"]
+    if not step("trusted files and tools (keytab 0600, state dir, helper, kinit/klist/kvno)",
+                lambda: box.setdefault("tm", TicketManager(cfg, UidMap(cfg.map_file, cfg.realm))) and None):
+        return 1
+    tm = box["tm"]
+    step("MIT Kerberos version", lambda: ".".join(map(str, tm.krb.version())))
+    step(f"uid map {cfg.map_file}", lambda: (tm.map.principal(-1), f"{len(tm.map._map)} enrolled")[1])
+
+    def broker():
+        tm._ensure_broker()
+        t = tm.krb.klist_times(str(cfg.broker_ccache))
+        return f"{cfg.broker_principal}, expires {time.ctime(t.expires)}" if t else "no TGT in cache"
+    broker_ok = step("broker TGT from keytab", broker)
+
+    if cfg.watch_slurm:
+        def slurm():
+            r = subprocess.run([cfg.squeue, "-h", "-o", "%U"], capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr.strip() or f"exit {r.returncode}")
+            return f"{len(set(r.stdout.split()))} user(s) with jobs"
+        step(f"squeue ({cfg.squeue})", slurm)
+
+    if user and broker_ok:
+        def mint():
+            pw = pwd.getpwnam(user)
+            principal = tm.map.principal(pw.pw_uid)
+            if not principal:
+                raise PermissionError(f"{user} (uid {pw.pw_uid}) is not in {cfg.map_file}")
+            out = cfg.state_dir / f".check.{pw.pw_uid}.cc"
+            try:
+                tm.krb.s4u_mint(str(cfg.broker_ccache), principal, cfg.delegate_targets, str(out))
+                exp = tm.krb.cache_expiry(str(out))
+            finally:
+                out.unlink(missing_ok=True)
+                tm.krb.forget(str(out))
+            return (f"{principal} -> {', '.join(cfg.delegate_targets)}; "
+                    f"expires {time.ctime(exp) if exp else '?'} (not installed)")
+        step(f"constrained delegation for {user}", mint)
+    print("all checks passed" if not failed else f"{failed} check(s) failed")
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="krb-credd")
     ap.add_argument("-c", "--config", default="/etc/krb-hpc/credd.conf")
+    ap.add_argument("--check", action="store_true",
+                    help="validate the configuration, tools, keytab and broker TGT, then exit")
+    ap.add_argument("--user", metavar="NAME",
+                    help="with --check: also mint (but not install) this user's tickets")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     if os.geteuid() != 0:
         raise SystemExit("krb-credd must run as root")
     os.umask(0o077)
-    cfg = Config.load(args.config)
-    tm = TicketManager(cfg, UidMap(cfg.map_file, cfg.realm))
-    # Fail fast on tools that can't do the job (not MIT, or older than 1.19,
-    # which lacks `kvno --out-cache`).
+    if args.check:
+        raise SystemExit(check(args.config, args.user))
+    # Configuration and file-permission problems are reported as one clear
+    # line rather than a traceback.
     try:
+        cfg = Config.load(args.config)
+        tm = TicketManager(cfg, UidMap(cfg.map_file, cfg.realm))
+        # Fail fast on tools that can't do the job (not MIT, or older than
+        # 1.19, which lacks `kvno --out-cache`).
         version = tm.krb.version()
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError, KeyError) as e:
         raise SystemExit(f"krb-credd: {e}")
     log.info("MIT Kerberos %s tools: %s", ".".join(map(str, version)),
              ", ".join(f"{k}={v}" for k, v in tm.krb.tools.items()))
-    # Acquire the broker TGT up front so a bad keytab/principal fails fast; a
-    # transient KDC hiccup is non-fatal (the refresh loop and first request
-    # retry).
+    # Acquire the broker TGT up front so a bad keytab/principal shows up in the
+    # log at once; a transient KDC hiccup is non-fatal (the refresh loop and
+    # first request retry).
     try:
         tm._ensure_broker()
     except Exception as e:
-        log.warning("initial broker kinit failed (will retry): %s", e)
-    stop = threading.Event()
-    threading.Thread(target=tm.refresh_loop, args=(stop,), daemon=True).start()
+        log.warning("initial broker TGT acquisition failed (will retry): %s", e)
     cfg.unix_socket.parent.mkdir(parents=True, exist_ok=True)
     cfg.unix_socket.unlink(missing_ok=True)
     srv = Server(str(cfg.unix_socket), Handler)
     os.chmod(cfg.unix_socket, 0o666)  # anyone may connect; SO_PEERCRED decides whose ticket
     srv.tm = tm
     srv.sem = threading.BoundedSemaphore(MAX_CLIENTS)
+    stop = threading.Event()
+    threading.Thread(target=tm.refresh_loop, args=(stop,), daemon=True, name="refresh").start()
     log.info("listening on %s (shared-home S4U; broker=%s; targets=%s; "
              "refresh %ds x%d workers; slurm-watch=%s; s4u=%s)", cfg.unix_socket,
              cfg.broker_principal, ",".join(cfg.delegate_targets),

@@ -207,6 +207,22 @@ def test_renew_is_atomic_and_never_touches_original_on_failure():
         assert k.kinit_renew(os.path.join(d, "missing.cc")) is False
 
 
+def test_klist_runs_only_when_the_cache_changes():
+    with tempfile.TemporaryDirectory() as d:
+        k, log = _fakes(d)
+        cc = os.path.join(d, "u.cc")
+        calls = lambda: sum(1 for l in open(log) if l.startswith(f"ARGS klist -c FILE:{cc}")) if os.path.exists(log) else 0
+        assert k.cache_expiry(cc) is None and calls() == 0          # missing: no process at all
+        open(cc, "w").write("v1")
+        k.cache_expiry(cc); k.cache_expiry(cc); k.klist_times(cc)
+        assert calls() == 2                                        # once per kind, then memoized
+        tmp = cc + ".new"; open(tmp, "w").write("v2"); os.replace(tmp, cc)
+        k.cache_expiry(cc)
+        assert calls() == 3                                        # replaced file -> re-read
+        k.forget(cc); k.cache_expiry(cc)
+        assert calls() == 4                                        # forget() drops the memo
+
+
 if __name__ == "__main__":
     import inspect
     tests = [v for n, v in sorted(globals().items()) if n.startswith("test_") and inspect.isfunction(v)]

@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 
@@ -170,6 +171,9 @@ class Krb5:
         # kvno -U treats the user as an enterprise name (AD resolves UPNs and
         # sAMAccountNames); -I uses a plain principal name.
         self.s4u_flag = "-U" if s4u_enterprise else "-I"
+        # klist results, memoized per file identity (see _klist_cached).
+        self._klist_cache: dict[tuple[str, str], tuple[tuple, object]] = {}
+        self._klist_lock = threading.Lock()
 
     def run(self, tool: str, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
         try:
@@ -192,18 +196,40 @@ class Krb5:
                 f"needs {'.'.join(map(str, MIN_MIT_VERSION))} or newer")
         return v
 
-    def klist_times(self, ccache: str) -> TgtTimes | None:
-        r = self.run("klist", "-c", f"FILE:{ccache}")
-        if r.returncode != 0:
+    def _klist_cached(self, kind: str, ccache: str, parse):
+        """Run `klist` on a cache only when the file has changed. Caches are
+        always replaced atomically (new inode) or rewritten (new mtime/size),
+        so (inode, mtime_ns, size) identifies the content; a missing file is
+        None without starting a process. This turns the per-request and
+        per-refresh-pass klist calls into a stat() for unchanged caches."""
+        try:
+            st = os.stat(ccache)
+        except OSError:
             return None
-        return parse_klist(r.stdout)
+        key = (st.st_ino, st.st_mtime_ns, st.st_size)
+        with self._klist_lock:
+            hit = self._klist_cache.get((kind, ccache))
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        r = self.run("klist", "-c", f"FILE:{ccache}")
+        value = parse(r.stdout) if r.returncode == 0 else None
+        with self._klist_lock:
+            self._klist_cache[(kind, ccache)] = (key, value)
+        return value
+
+    def forget(self, ccache: str) -> None:
+        """Drop memoized results for a cache that is being retired."""
+        with self._klist_lock:
+            for kind in ("tgt", "exp"):
+                self._klist_cache.pop((kind, ccache), None)
+
+    def klist_times(self, ccache: str) -> TgtTimes | None:
+        """Expiry and renew-until of the TGT in a cache (the broker's)."""
+        return self._klist_cached("tgt", ccache, parse_klist)
 
     def cache_expiry(self, ccache: str) -> float | None:
         """Earliest expiry across all (service) tickets in a cache, or None."""
-        r = self.run("klist", "-c", f"FILE:{ccache}")
-        if r.returncode != 0:
-            return None
-        return earliest_expiry(r.stdout)
+        return self._klist_cached("exp", ccache, earliest_expiry)
 
     def kinit_keytab(self, principal: str, keytab: str, ccache: str,
                      lifetime: str, renew_lifetime: str) -> None:

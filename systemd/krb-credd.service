@@ -14,7 +14,9 @@ StateDirectory=krb-hpc
 
 # --- sandboxing (tuned so setpriv can drop to the user and kinit can reach AD) ---
 ProtectSystem=strict
-# krb-credd writes tickets into users' home dirs via the setpriv child:
+# krb-credd writes tickets into users' home dirs via the setpriv child, so the
+# home root must be writable here. If homes live elsewhere (e.g. /gpfs/home),
+# add that path -- otherwise every install fails with "Read-only file system".
 ReadWritePaths=/var/lib/krb-hpc /run/krb-hpc /home
 ProtectHome=false
 PrivateTmp=true
@@ -31,12 +33,20 @@ MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # NB: NOT NoNewPrivileges (setpriv re-exec needs it off); the setpriv child
 # itself runs with --no-new-privs and all caps dropped.
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+# Least privilege. SETUID/SETGID/SETPCAP: setpriv switches to the user and
+# drops capabilities. DAC_READ_SEARCH (read-only): lets the daemon notice that a
+# user deleted ~/.krb5/krb5cc_hpc so the refresh puts it back. Nothing else is
+# needed -- the daemon only writes to its own root-owned files, and all writes
+# into homes happen as the user. (Previously also DAC_OVERRIDE, CHOWN, FOWNER.)
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_DAC_READ_SEARCH
 SystemCallFilter=@system-service @setuid
 SystemCallFilter=~@debug @mount @swap @reboot @obsolete @cpu-emulation
 SystemCallErrorNumber=EPERM
 # keytabs are the crown jewels; make them inaccessible to this unit if you
 # relocate them, and keep them root:0600 (the daemon enforces this at startup).
+
+# Validate a deployment before enabling the unit:
+#   krb-credd --check [--user <name>]
 
 [Install]
 WantedBy=multi-user.target

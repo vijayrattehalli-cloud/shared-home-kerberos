@@ -105,6 +105,8 @@ install -D bin/krb-install-ccache /usr/local/libexec/krb-hpc/krb-install-ccache
 
 # 3. enroll a user: add 'jdoe jdoe' to uidmap.conf (real AD principal), and make
 #    sure jdoe is delegation-eligible and the backends are in delegate_targets.
+krb-credd --check --user jdoe      # validates config, tools, keytab, broker TGT, and
+                                   # mints (without installing) jdoe's tickets
 systemctl enable --now krb-credd
 
 # 4. user logs in (profile.d runs krb-get) -> service tickets land in ~/.krb5

@@ -211,6 +211,18 @@ maximum simplicity — and its defining trade-off (§8).
   admin from 15 to 60 minutes) instead of being retried every pass; a `krb-get`
   always tries immediately. Users get a plain-language reason for the common
   failures; details stay in the log.
+- **Cheap steady state** — `klist` results are memoized per cache file
+  (inode, mtime, size); caches are only ever replaced atomically, so an
+  unchanged cache costs a `stat()`, not a process, on every request and pass.
+- **Self-healing** — the first refresh pass runs at start-up; after a restart,
+  users with a master cache in `state_dir` are treated as active again; and a
+  home cache the user deleted is put back on the next pass (detected with the
+  read-only `CAP_DAC_READ_SEARCH`; on a root-squashed home it can't be seen, so
+  it returns at the next mint).
+- **Admin check** — `krb-credd --check [--user NAME]` validates the config
+  (required options, typos), trusted files and tools, the MIT version, the
+  uid map, the broker TGT, `squeue`, and optionally a real S4U mint for one
+  user — without starting the daemon or touching any home.
 - **`get.py` / `install_ccache.py`** — the `krb-get` client and the
   self-contained install helper (the helper imports nothing beyond the stdlib,
   because the daemon runs it from a libexec path far from the package).
@@ -439,6 +451,10 @@ Revoking **everyone** is one action: rotate or disable the broker account.
 | Condition | Behavior |
 |---|---|
 | User not enrolled (`uidmap` miss) | `krb-get` returns an error; nothing written |
+| User deletes `~/.krb5/krb5cc_hpc` | put back on the next refresh pass (no new mint) |
+| Daemon restarted | previously active users resumed from `state_dir`; first pass at start-up |
+| Daemon hung | `krb-get` gives up after 30 s (`KRB_HPC_TIMEOUT`), so logins never hang |
+| Typo in `credd.conf` | logged as an unknown option; missing required options stop start-up with a clear message |
 | User account not delegation-eligible (Protected Users / sensitive) | S4U2Proxy fails at the KDC; logged; no cache written for that user |
 | Backend SPN not in `msDS-AllowedToDelegateTo` | S4U2Proxy refused by the KDC; logged as `not_delegable`; background retries backed off |
 | MIT tools older than 1.19, not MIT, or writable by others | daemon refuses to start, saying why |

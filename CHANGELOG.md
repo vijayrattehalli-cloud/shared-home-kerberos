@@ -1,5 +1,44 @@
 # Changelog
 
+## 2.2.0
+
+From a critical review for efficiency, simplicity, supportability and
+robustness. Same design, same MIT tools.
+
+**Robustness**
+- `krb-get` times out (30 s, `KRB_HPC_TIMEOUT`) so a stuck daemon can't hang
+  logins, and shell-quotes the path it prints for `eval`.
+- A home cache the user deleted is put back on the next refresh pass.
+- After a restart the daemon resumes refreshing previously active users and
+  runs its first refresh pass immediately instead of 5 minutes later.
+- The TaskProlog finds the home directory even when `HOME` is unset
+  (`sbatch --export=NONE`).
+- The install helper `fsync`s before renaming into place.
+
+**Efficiency**
+- `klist` results are memoized per cache file (inode, mtime, size): an
+  unchanged cache costs a `stat()` instead of a process, so the steady-state
+  refresh pass starts no Kerberos processes for users who don't need a mint.
+- Users who aren't enrolled are filtered out before the broker is checked.
+
+**Simplicity / supportability**
+- One install helper: `bin/krb-install-ccache` is now a symlink to
+  `src/krbhpc/install_ccache.py`.
+- `krb-credd --check [--user NAME]` validates a deployment without starting
+  the daemon.
+- `credd.conf`: unknown options (typos) are logged; missing required options
+  and bad durations fail with a one-line message instead of a traceback.
+- Per-user state is pruned when a user goes idle.
+- systemd unit: dropped `CAP_DAC_OVERRIDE`, `CAP_CHOWN`, `CAP_FOWNER` (only
+  `SETUID`, `SETGID`, `SETPCAP`, `DAC_READ_SEARCH` remain); documented that
+  non-`/home` home roots must be added to `ReadWritePaths`.
+
+**Tests**
+- End-to-end: 28 checks (was 22), with the daemon run under exactly the
+  systemd unit's capabilities; new checks for cache repair, restart resume,
+  `--check`, and config typos.
+- Unit: 14 helper, 10 daemon, 9 hardening tests.
+
 ## 2.1.0
 
 Same design and the same MIT command-line tools; hardening, robustness and a

@@ -66,10 +66,7 @@ def test_backoff_grows_and_differs_by_category():
 def test_backed_off_user_is_skipped():
     tm = _bare_manager()
     called = []
-    class M:
-        def principal(self, uid): called.append(uid); return "u"
-    tm.map = M()
-    tm.ensure = lambda uid: None
+    tm.ensure = lambda uid: called.append(uid)
     tm._failures[7] = (1, time.time() + 60)
     tm._refresh_one(7)
     assert called == []                                  # skipped while backing off
@@ -117,6 +114,92 @@ def test_admin_enroll_and_revoke_match_exactly():
         lines = m.read_text().splitlines()
         assert lines == ["rootx rootx", "r..t rdt"], lines
         assert oct(m.stat().st_mode & 0o777) == "0o644" and m.stat().st_uid == 0
+
+
+def test_config_errors_are_clear_and_typos_are_reported():
+    if not ROOT:
+        return
+    import logging
+    with tempfile.TemporaryDirectory() as d:
+        bad = Path(d) / "c.conf"
+        for body, want in [("[other]\n", "missing [broker] section"),
+                           ("[broker]\nrealm = R\n", "required option(s) missing: broker_principal, delegate_targets"),
+                           ("[broker]\nrealm=R\nbroker_principal=b\ndelegate_targets=h/x\nrenew_margin=5x\n", "renew_margin: bad duration")]:
+            bad.write_text(body); os.chmod(bad, 0o644)
+            try:
+                credd.Config.load(str(bad))
+            except ValueError as e:
+                assert want in str(e), (want, str(e))
+            else:
+                raise AssertionError(f"accepted: {body!r}")
+        seen = []
+        h = logging.Handler(); h.emit = lambda r: seen.append(r.getMessage())
+        credd.log.addHandler(h)
+        try:
+            credd.Config.load(_conf(d, "renew_margn = 1h\n"))
+        finally:
+            credd.log.removeHandler(h)
+        assert any("unknown option(s): renew_margn" in m for m in seen), seen
+
+
+def test_missing_only_when_known_gone():
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "cc"
+        assert credd._missing(f) is True
+        f.write_text("x")
+        assert credd._missing(f) is False
+    # A path root can't look into (e.g. root-squashed NFS) counts as present.
+    assert credd._missing(Path("/proc/1/root/nonexistent-but-unreadable")) in (True, False)
+
+
+def test_seed_active_from_state_dir():
+    with tempfile.TemporaryDirectory() as d:
+        sd = Path(d)
+        for name in ("krb5cc_1001", "krb5cc_1002", "krb5cc_1002.new", ".broker.x.cc", "broker.cc"):
+            (sd / name).write_text("x")
+        tm = object.__new__(credd.TicketManager)
+        tm._active = {}
+        tm.cfg = type("C", (), {"state_dir": sd})()
+        tm._seed_active()
+        assert set(tm._active) == {1001, 1002}, tm._active
+
+
+def test_krb_get_quotes_output_and_times_out():
+    import socket as _s
+    from krbhpc import get
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "sock")
+        srv = _s.socket(_s.AF_UNIX, _s.SOCK_STREAM); srv.bind(path); srv.listen(4)
+        def serve(reply):
+            c, _ = srv.accept(); c.recv(16)
+            if reply is not None:
+                c.sendall(reply)
+            else:
+                time.sleep(3)          # a hung daemon
+            c.close()
+        import contextlib, io
+        for reply, want_rc, want in [(b"OK /home/a b/.krb5/krb5cc_hpc\n", 0, "export KRB5CCNAME='FILE:/home/a b/.krb5/krb5cc_hpc'\n"),
+                                     (b"ERR uid 5 is not enrolled\n", 1, ""),
+                                     (None, 2, "")]:
+            t = threading.Thread(target=serve, args=(reply,)); t.start()
+            out = io.StringIO()
+            os.environ.update(KRB_HPC_SOCKET=path, KRB_HPC_TIMEOUT="1")
+            start = time.time()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                rc = get.main([])
+            assert rc == want_rc and out.getvalue() == want, (reply, rc, out.getvalue())
+            if reply is None:
+                assert time.time() - start < 2.5, "krb-get did not time out"
+            t.join()
+        srv.close()
+
+
+def test_taskprolog_without_home():
+    with tempfile.TemporaryDirectory() as d:
+        out = subprocess.run(["env", "-i", "PATH=/usr/bin:/bin", "bash", str(REPO / "slurm" / "taskprolog.krb.sh")],
+                             capture_output=True, text=True).stdout
+        home = os.path.expanduser("~" + __import__("pwd").getpwuid(os.getuid()).pw_name)
+        assert f"{home}/.krb5/krb5cc_hpc" in out, out      # found HOME from passwd
 
 
 if __name__ == "__main__":

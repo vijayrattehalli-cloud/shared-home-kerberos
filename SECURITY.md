@@ -102,8 +102,12 @@ The unit runs the daemon under: `ProtectSystem=strict` with an explicit
 `ProtectKernelTunables/Modules/Logs`, `ProtectControlGroups`, `ProtectClock`,
 `ProtectHostname`, `RestrictNamespaces`, `LockPersonality`,
 `MemoryDenyWriteExecute`, `RestrictRealtime`, `RestrictAddressFamilies=AF_UNIX
-AF_INET AF_INET6`, a capped `CapabilityBoundingSet` (`CAP_SETUID CAP_SETGID
-CAP_SETPCAP CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE`), and a
+AF_INET AF_INET6`, a capped `CapabilityBoundingSet` of just `CAP_SETUID CAP_SETGID
+CAP_SETPCAP` (for `setpriv`) and the read-only `CAP_DAC_READ_SEARCH` (to notice a
+deleted home cache) — no `CAP_DAC_OVERRIDE`, `CAP_CHOWN` or `CAP_FOWNER`, since
+the daemon writes only its own root-owned files and every write into a home
+happens as the user; the end-to-end test runs the daemon with exactly this set —
+and a
 `SystemCallFilter` of `@system-service @setuid` minus the dangerous groups.
 `NoNewPrivileges` is intentionally **off** at the unit level (so `setpriv` can
 transition identity); the `setpriv` child itself runs `--no-new-privs` with all

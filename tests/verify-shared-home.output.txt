@@ -1,12 +1,13 @@
-# verify-shared-home.sh output (recorded 2026-10-09T21:37Z)
-# Real krb-credd daemon running the MIT 1.20.1 tools (kinit/klist/kvno) by absolute path, against an
-# MIT 1.20.1 KDC using the test KDB module (constrained-delegation allow-list). Default s4u_name_type
-# (enterprise, kvno -U); the same run with S4U_NAME_TYPE=principal (kvno -I) also passes.
+# verify-shared-home.sh output (recorded 2026-10-09T21:48Z)
+# Real krb-credd daemon -- limited to CAP_SETUID/SETGID/SETPCAP/DAC_READ_SEARCH as in the systemd unit --
+# running the MIT 1.20.1 tools by absolute path against an MIT 1.20.1 KDC using the test KDB module
+# (constrained-delegation allow-list). s4u_name_type = enterprise (kvno -U).
 
 --- Section 0: start-up checks ---
 PASS  refuses to start with MIT Kerberos older than 1.19 (no kvno --out-cache)
 PASS  refuses a Kerberos tool that others can write
 PASS  started with absolute tool paths and logged the MIT version
+PASS  daemon runs with only SETUID, SETGID, SETPCAP, DAC_READ_SEARCH (CapEff=00000000000001c4), as in the systemd unit
 --- Section 1: the daemon mints, end to end (kvno -U ... -P) ---
 PASS  krb-get returned the shared-home cache path
 PASS  broker obtained its own TGT from ONE keytab (kinit -k)
@@ -20,7 +21,9 @@ PASS  broker cache still holds only the broker's TGT after repeated mints
 --- Section 2: compute nodes and the backend service ---
 PASS  all 4 simulated compute nodes used the in-home service ticket
 PASS  hive service accepted the delegated ticket as shuser@ENT.TEST
+PASS  a deleted home cache is put back by the background refresh (no re-mint needed)
 --- Section 3: unattended refresh, backoff, renewal ---
+PASS  after a restart, previously active users are refreshed again (first pass runs at start-up)
 PASS  squeue-watch refresh loop re-minted and re-installed with no user action
 PASS  re-installed cache is usable (atomic replace)
 PASS  non-delegable user failed once in the background, classified, then backed off (not retried every pass)
@@ -30,6 +33,10 @@ PASS  un-enrolled user refused (identity from SO_PEERCRED)
 PASS  non-delegable user gets no tickets and a clear message: 'your account cannot be delegated to the HPC services; contact the HPC admins'
 PASS  backend NOT on the KDC allow-list is refused (web/vm)
 PASS  hostile KRB5CCNAME/KRB5_TRACE/KRB5_CONFIG/LC_ALL/TZ in the daemon's environment had no effect
+--- Section 5: krb-credd --check (admin validation) ---
+PASS  --check --user shuser validates config, tools, keytab, broker TGT, squeue and a real S4U mint
+PASS  --check pinpoints a non-delegable user: FAIL  constrained delegation for protected: S4U mint failed for protec...
+PASS  a typo in credd.conf is reported, not silently ignored
 
 ALL CHECKS PASSED -- shared-home: one broker keytab, per-user service tickets
 minted by S4U2Self+S4U2Proxy through the MIT tools, one continuously-fresh cache

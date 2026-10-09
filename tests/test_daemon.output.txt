@@ -2,6 +2,11 @@ ok   test_admin_enroll_and_revoke_match_exactly
 ok   test_backed_off_user_is_skipped
 ok   test_backoff_grows_and_differs_by_category
 ok   test_config_defaults_and_new_options
+ok   test_config_errors_are_clear_and_typos_are_reported
+ok   test_krb_get_quotes_output_and_times_out
+ok   test_missing_only_when_known_gone
+ok   test_seed_active_from_state_dir
+ok   test_taskprolog_without_home
 ok   test_uidmap_rejects_symlink
 
-all 5 daemon tests passed
+all 10 daemon tests passed

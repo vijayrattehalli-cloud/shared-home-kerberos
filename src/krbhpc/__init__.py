@@ -6,4 +6,4 @@ enrolled user's backend SERVICE tickets, writing them into the user's home
 directory on the shared filesystem; every compute node already sees them. No
 per-user keytabs. Pure Python; MIT krb5 (1.19+) client tools + setpriv at runtime.
 """
-__version__ = "2.1.0"
+__version__ = "2.2.0"

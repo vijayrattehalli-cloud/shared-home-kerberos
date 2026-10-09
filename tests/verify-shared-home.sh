@@ -177,7 +177,9 @@ EOC
 chmod 644 "$R/credd.conf"; }
 start_daemon(){
   # A hostile environment: none of these may reach the Kerberos tools.
-  env KRB5CCNAME="FILE:$R/evil.cc" KRB5_KTNAME="FILE:$R/evil.kt" KRB5_TRACE="$R/evil.trace" \
+  # Run with ONLY the capabilities systemd/krb-credd.service grants.
+  setpriv --bounding-set=-all,+setuid,+setgid,+setpcap,+dac_read_search --inh-caps=-all \
+    env KRB5CCNAME="FILE:$R/evil.cc" KRB5_KTNAME="FILE:$R/evil.kt" KRB5_TRACE="$R/evil.trace" \
       KRB5_CONFIG="$R/evil.conf" LC_ALL=de_DE.UTF-8 TZ=Asia/Tokyo \
     python3 "$CREDD" -c "$R/credd.conf" >>"$R/daemon.log" 2>&1 & DPID=$!
   for i in $(seq 1 40); do [ -S "$R/run/sock" ] && return 0; sleep 0.25; done
@@ -195,6 +197,9 @@ OUT=$(python3 "$CREDD" -c "$R/credd.conf" 2>&1); RC=$?
 write_conf
 start_daemon
 grep -q "MIT Kerberos [0-9.]* tools: kinit=/.*klist=/.*kvno=/" "$R/daemon.log" && pass "started with absolute tool paths and logged the MIT version" || fail "no version/tools line"
+CAPS=$(awk '/^CapEff/{print $2}' /proc/$DPID/status)
+[ "$CAPS" = "00000000000001c4" ] && pass "daemon runs with only SETUID, SETGID, SETPCAP, DAC_READ_SEARCH (CapEff=$CAPS), as in the systemd unit" \
+  || fail "unexpected capabilities CapEff=$CAPS"
 
 as(){ local u=$1; shift; runuser -u "$u" -- env KRB5_CONFIG="$KRB5_CONFIG" KRB_HPC_SOCKET="$R/run/sock" "$@"; }
 klist_c(){ env LC_ALL=C klist -c "FILE:$1" 2>/dev/null; }
@@ -244,18 +249,26 @@ OUT="$OUT$(cat "$R/gss.log" 2>/dev/null)"
 echo "$OUT" | grep -qi "localname: shuser\|shuser@$REALM" \
   && pass "hive service accepted the delegated ticket as shuser@$REALM" || fail "gss accept: $OUT"
 
+N0=$(grep -c "minted service tickets uid=$SHUID" "$R/daemon.log")
+runuser -u shuser -- rm -f "$CC"; sleep 5
+[ -s "$CC" ] && [ "$(stat -c '%U %a' "$CC")" = "shuser 600" ] && [ "$(grep -c "minted service tickets uid=$SHUID" "$R/daemon.log")" = "$N0" ] \
+  && pass "a deleted home cache is put back by the background refresh (no re-mint needed)" || fail "deleted home cache was not restored"
+
 echo "--- Section 3: unattended refresh, backoff, renewal ---"
 m1=$(stat -c '%Y.%X' "$CC")
 kill $DPID; wait $DPID 2>/dev/null
 MARGIN=30d write_conf          # every pass now re-mints
 start_daemon
 sleep 10
+grep -q "resuming refresh for [0-9]* previously active user(s)" "$R/daemon.log" \
+  && pass "after a restart, previously active users are refreshed again (first pass runs at start-up)" || fail "restart did not resume active users"
 m2=$(stat -c '%Y.%X' "$CC")
 [ "$(grep -c "minted service tickets uid=$SHUID" "$R/daemon.log")" -ge 3 ] && [ "$m1" != "$m2" ] \
   && pass "squeue-watch refresh loop re-minted and re-installed with no user action" || fail "no unattended re-mint"
 as shuser env KRB5CCNAME="FILE:$CC" kvno "hive/$H@$REALM" >/dev/null 2>&1 \
   && pass "re-installed cache is usable (atomic replace)" || fail "refreshed cache unusable"
-N=$(grep -c "refresh uid=$PRUID failed (not_delegable; next try in 900s)" "$R/daemon.log")
+# Count since the latest start (backoff state is in memory, so a restart retries once).
+N=$(awk '/listening on/{n=0} /refresh uid='"$PRUID"' failed \(not_delegable; next try in 900s\)/{n++} END{print n+0}' "$R/daemon.log")
 [ "$N" = 1 ] && pass "non-delegable user failed once in the background, classified, then backed off (not retried every pass)" \
   || fail "expected one classified failure + backoff for uid $PRUID, saw $N: $(grep "uid=$PRUID" "$R/daemon.log" | tail -3)"
 PYTHONPATH="$REPO/src" python3 - "$R" "$SHIM" <<'EOF' && pass "broker TGT renewal is atomic (renews a copy, renames it into place)" || fail "renewal"
@@ -293,6 +306,18 @@ EOF
   && pass "hostile KRB5CCNAME/KRB5_TRACE/KRB5_CONFIG/LC_ALL/TZ in the daemon's environment had no effect" \
   || fail "the daemon's environment leaked into the Kerberos tools"
 grep -q "Traceback" "$R/daemon.log" && fail "daemon raised an unhandled exception" || true
+
+echo "--- Section 5: krb-credd --check (admin validation) ---"
+MARGIN=1h write_conf
+OUT=$(python3 "$CREDD" -c "$R/credd.conf" --check --user shuser 2>/dev/null); RC=$?
+[ $RC -eq 0 ] && echo "$OUT" | grep -q "PASS  constrained delegation for shuser" && echo "$OUT" | grep -q "all checks passed" \
+  && pass "--check --user shuser validates config, tools, keytab, broker TGT, squeue and a real S4U mint" || fail "--check: $OUT"
+OUT=$(python3 "$CREDD" -c "$R/credd.conf" --check --user protected 2>/dev/null); RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -q "FAIL  constrained delegation for protected: .*\[not_delegable\]" \
+  && pass "--check pinpoints a non-delegable user: $(echo "$OUT" | grep FAIL | cut -c1-70)..." || fail "--check protected: $OUT"
+echo "renew_margn = 2h" >> "$R/credd.conf"
+OUT=$(python3 "$CREDD" -c "$R/credd.conf" --check 2>&1)
+echo "$OUT" | grep -q "unknown option(s): renew_margn" && pass "a typo in credd.conf is reported, not silently ignored" || fail "typo not reported: $OUT"
 
 echo
 echo "ALL CHECKS PASSED -- shared-home: one broker keytab, per-user service tickets"

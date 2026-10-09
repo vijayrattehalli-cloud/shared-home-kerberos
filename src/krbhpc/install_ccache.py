@@ -7,8 +7,10 @@ USER'S identity. It therefore works on root-squashed NFS/GPFS/Lustre homes and
 can never write anywhere the user could not. Reads a ccache on stdin and
 installs it atomically at DEST (parent dir mode 0700, file mode 0600).
 
-Pure Python, standard library only. Equivalent to the shell helper of the same
-name; provided in Python so the whole package is one language.
+Pure Python, standard library only, and SELF-CONTAINED on purpose: it is
+installed on its own (e.g. /usr/local/libexec/krb-hpc/krb-install-ccache) and
+run from there, so it must import nothing from the krbhpc package.
+bin/krb-install-ccache is a symlink to this file -- there is one copy.
 """
 from __future__ import annotations
 
@@ -40,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+            f.flush()
+            os.fsync(f.fileno())   # on disk (and on the NFS server) before the rename
         os.chmod(tmp, 0o600)
         os.replace(tmp, dest)  # atomic: readers on any node see old or new, never partial
     except BaseException:
