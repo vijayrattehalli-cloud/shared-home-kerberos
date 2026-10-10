@@ -41,7 +41,9 @@ for t in $TOOLS; do
   if [ -n "$MIT_PREFIX" ]; then f=$(ls "$MIT_PREFIX"/bin/$t "$MIT_PREFIX"/sbin/$t 2>/dev/null | head -1); lp="LD_LIBRARY_PATH=$MIT_PREFIX/lib "
   else f=$(command -v $t || true); lp=""; fi
   [ -n "$f" ] || { echo "need MIT $t (set MIT_PREFIX?)"; exit 1; }
-  printf '#!/bin/sh\n%sexec %s "$@"\n' "$lp" "$f" > "$SHIM/$t"; chmod 755 "$SHIM/$t"
+  # kvno also logs each call (used to prove the failure cooldown saves KDC trips).
+  log=""; [ "$t" = kvno ] && log='{ echo "$*" >> "'"$SHIM"'/kvno.calls"; } 2>/dev/null\n'
+  printf "#!/bin/sh\n${log}%sexec %s \"\$@\"\n" "$lp" "$f" > "$SHIM/$t"; chmod 755 "$SHIM/$t"
 done
 export PATH="$SHIM:$PATH"
 for t in setpriv runuser useradd python3; do command -v $t >/dev/null || { echo "need $t"; exit 1; }; done
@@ -173,6 +175,8 @@ renew_margin = ${MARGIN:-1h}
 min_reissue_interval = 0s
 watch_slurm = true
 squeue = $R/bin/squeue
+disable_file = $R/disabled
+failure_cooldown = 60s
 EOC
 chmod 644 "$R/credd.conf"; }
 start_daemon(){
@@ -200,6 +204,8 @@ grep -q "MIT Kerberos [0-9.]* tools: kinit=/.*klist=/.*kvno=/" "$R/daemon.log" &
 CAPS=$(awk '/^CapEff/{print $2}' /proc/$DPID/status)
 [ "$CAPS" = "00000000000001c4" ] && pass "daemon runs with only SETUID, SETGID, SETPCAP, DAC_READ_SEARCH (CapEff=$CAPS), as in the systemd unit" \
   || fail "unexpected capabilities CapEff=$CAPS"
+grep -q "^Max core file size *0 *0 " /proc/$DPID/limits && ! grep -q "could not mark the process non-dumpable\|could not disable core dumps" "$R/daemon.log" \
+  && pass "daemon is non-dumpable with core dumps disabled (it holds users' tickets in memory)" || fail "core/dumpable hardening: $(grep core /proc/$DPID/limits)"
 
 as(){ local u=$1; shift; runuser -u "$u" -- env KRB5_CONFIG="$KRB5_CONFIG" KRB_HPC_SOCKET="$R/run/sock" "$@"; }
 klist_c(){ env LC_ALL=C klist -c "FILE:$1" 2>/dev/null; }
@@ -307,11 +313,33 @@ EOF
   || fail "the daemon's environment leaked into the Kerberos tools"
 grep -q "Traceback" "$R/daemon.log" && fail "daemon raised an unhandled exception" || true
 
+echo "--- Section 4b: safety controls ---"
+OUT=$(as shuser python3 "$GET" --status 2>&1)
+echo "$OUT" | grep -q "enrolled: *True" && echo "$OUT" | grep -q "tickets expire: *20[0-9-]* [0-9:]* (in " \
+  && pass "krb-get --status shows enrollment and ticket expiry without minting" || fail "status: $OUT"
+C0=$(grep -c "protected" "$SHIM/kvno.calls" 2>/dev/null || echo 0)
+for i in 1 2 3; do OUT=$(as protected python3 "$GET" 2>&1); echo "$OUT" | grep -q "cannot be delegated" || fail "protected #$i: $OUT"; done
+C1=$(grep -c "protected" "$SHIM/kvno.calls" 2>/dev/null || echo 0)
+[ "$(grep -c shuser "$SHIM/kvno.calls" 2>/dev/null || echo 0)" -gt 0 ] && [ $((C1 - C0)) -le 1 ] && pass "failure cooldown: 3 requests from a refused user cost $((C1 - C0)) KDC attempt(s), not 3" \
+  || fail "cooldown: $((C1 - C0)) kvno calls for 3 requests"
+OUT=$(as protected python3 "$GET" --status 2>&1)
+echo "$OUT" | grep -q "last error: *your account cannot be delegated" && pass "krb-get --status explains the last failure to the user" || fail "status protected: $OUT"
+printf 'daemon daemon\n' >> "$R/uidmap"
+OUT=$(as daemon python3 "$GET" 2>&1); [ $? -eq 1 ] && echo "$OUT" | grep -q "system account" \
+  && pass "an enrolled system account (uid $(id -u daemon)) is still refused (min_uid)" || fail "min_uid: $OUT"
+touch "$R/disabled"
+OUT=$(as shuser python3 "$GET" 2>&1); [ $? -eq 1 ] && echo "$OUT" | grep -q "disabled by the HPC administrators" \
+  && pass "kill switch: with $R/disabled present, krb-get is refused at once (no restart)" || fail "kill switch: $OUT"
+N0=$(grep -c "skipping refresh" "$R/daemon.log"); sleep 4
+[ "$(grep -c "skipping refresh" "$R/daemon.log")" -gt "$N0" ] && pass "kill switch also pauses the background refresh" || fail "refresh not paused"
+rm -f "$R/disabled"
+OUT=$(as shuser python3 "$GET") && [ "$OUT" = "export KRB5CCNAME=FILE:$CC" ] && pass "removing the kill switch resumes service" || fail "after kill switch: $OUT"
+
 echo "--- Section 5: krb-credd --check (admin validation) ---"
 MARGIN=1h write_conf
 OUT=$(python3 "$CREDD" -c "$R/credd.conf" --check --user shuser 2>/dev/null); RC=$?
-[ $RC -eq 0 ] && echo "$OUT" | grep -q "PASS  constrained delegation for shuser" && echo "$OUT" | grep -q "all checks passed" \
-  && pass "--check --user shuser validates config, tools, keytab, broker TGT, squeue and a real S4U mint" || fail "--check: $OUT"
+[ $RC -eq 0 ] && echo "$OUT" | grep -q "PASS  constrained delegation for shuser: .*validated" && echo "$OUT" | grep -q "PASS  kill switch" && echo "$OUT" | grep -q "all checks passed" \
+  && pass "--check --user shuser validates config, tools, keytab, kill switch, broker TGT, squeue and a real, validated S4U mint" || fail "--check: $OUT"
 OUT=$(python3 "$CREDD" -c "$R/credd.conf" --check --user protected 2>/dev/null); RC=$?
 [ $RC -eq 1 ] && echo "$OUT" | grep -q "FAIL  constrained delegation for protected: .*\[not_delegable\]" \
   && pass "--check pinpoints a non-delegable user: $(echo "$OUT" | grep FAIL | cut -c1-70)..." || fail "--check protected: $OUT"
@@ -322,4 +350,5 @@ echo "$OUT" | grep -q "unknown option(s): renew_margn" && pass "a typo in credd.
 echo
 echo "ALL CHECKS PASSED -- shared-home: one broker keytab, per-user service tickets"
 echo "minted by S4U2Self+S4U2Proxy through the MIT tools, one continuously-fresh cache"
-echo "visible on every node, the KDC allow-list enforced, and failures classified."
+echo "visible on every node, the KDC allow-list enforced, every minted cache validated"
+echo "before use, failures classified and rate-limited, and an administrator kill switch."

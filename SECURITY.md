@@ -87,10 +87,31 @@ collects users' service tickets.
 with `ERR busy`); `CLIENT_TIMEOUT_S` (10s) caps a slow client; `min_reissue_
 interval` (10s) throttles re-copying into `$HOME` so `krb-get` spam cannot drive
 repeated `setpriv`+write storms. The cheap validity check still runs each call.
+After a failed mint, a user's requests are answered from the cached error for
+`failure_cooldown` (60s), so a refused user cannot turn logins or scripts into
+a stream of requests to the domain controller.
+
+### 3.5a Unexpected tickets from the KDC
+Every freshly minted cache is inspected before it replaces anything: it must
+name the expected user (case-insensitive), hold exactly one ticket per
+`delegate_targets` entry and nothing else, contain no TGT, use AES for both
+session key and ticket, and have at least 5 minutes of life. Otherwise it is
+discarded (`bad_ticket`) and the previous cache stays. This guards against an
+enterprise-name lookup resolving to a different AD account, an allow-list or
+KDC-policy change, and RC4 fallback.
+
+### 3.5b Emergency stop and account scope
+`disable_file` is a kill switch: while it exists nothing is minted or
+installed, effective immediately. `min_uid` (1000) keeps root and system
+accounts out of scope even if enrolled by mistake. Neither revokes tickets
+already issued.
 
 ### 3.6 Information disclosure
 Unexpected failures return a terse `ERR could not obtain ticket`; details go to
-the daemon log. Caches are `0600`; master copies in `state_dir` and the broker
+the daemon log. The daemon disables core dumps and marks itself non-dumpable
+(`prctl(PR_SET_DUMPABLE, 0)`), and the unit sets `LimitCORE=0`, so tickets held
+in its memory are not written to core files or readable through `/proc` by
+other processes. Caches are `0600`; master copies in `state_dir` and the broker
 ccache are `0600` under a `0700` root-owned dir.
 
 ---

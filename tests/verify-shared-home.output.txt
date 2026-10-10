@@ -1,13 +1,9 @@
-# verify-shared-home.sh output (recorded 2026-10-09T21:48Z)
-# Real krb-credd daemon -- limited to CAP_SETUID/SETGID/SETPCAP/DAC_READ_SEARCH as in the systemd unit --
-# running the MIT 1.20.1 tools by absolute path against an MIT 1.20.1 KDC using the test KDB module
-# (constrained-delegation allow-list). s4u_name_type = enterprise (kvno -U).
-
 --- Section 0: start-up checks ---
 PASS  refuses to start with MIT Kerberos older than 1.19 (no kvno --out-cache)
 PASS  refuses a Kerberos tool that others can write
 PASS  started with absolute tool paths and logged the MIT version
 PASS  daemon runs with only SETUID, SETGID, SETPCAP, DAC_READ_SEARCH (CapEff=00000000000001c4), as in the systemd unit
+PASS  daemon is non-dumpable with core dumps disabled (it holds users' tickets in memory)
 --- Section 1: the daemon mints, end to end (kvno -U ... -P) ---
 PASS  krb-get returned the shared-home cache path
 PASS  broker obtained its own TGT from ONE keytab (kinit -k)
@@ -33,11 +29,20 @@ PASS  un-enrolled user refused (identity from SO_PEERCRED)
 PASS  non-delegable user gets no tickets and a clear message: 'your account cannot be delegated to the HPC services; contact the HPC admins'
 PASS  backend NOT on the KDC allow-list is refused (web/vm)
 PASS  hostile KRB5CCNAME/KRB5_TRACE/KRB5_CONFIG/LC_ALL/TZ in the daemon's environment had no effect
+--- Section 4b: safety controls ---
+PASS  krb-get --status shows enrollment and ticket expiry without minting
+PASS  failure cooldown: 3 requests from a refused user cost 0 KDC attempt(s), not 3
+PASS  krb-get --status explains the last failure to the user
+PASS  an enrolled system account (uid 1) is still refused (min_uid)
+PASS  kill switch: with /tmp/shpy.pm1N/disabled present, krb-get is refused at once (no restart)
+PASS  kill switch also pauses the background refresh
+PASS  removing the kill switch resumes service
 --- Section 5: krb-credd --check (admin validation) ---
-PASS  --check --user shuser validates config, tools, keytab, broker TGT, squeue and a real S4U mint
+PASS  --check --user shuser validates config, tools, keytab, kill switch, broker TGT, squeue and a real, validated S4U mint
 PASS  --check pinpoints a non-delegable user: FAIL  constrained delegation for protected: S4U mint failed for protec...
 PASS  a typo in credd.conf is reported, not silently ignored
 
 ALL CHECKS PASSED -- shared-home: one broker keytab, per-user service tickets
 minted by S4U2Self+S4U2Proxy through the MIT tools, one continuously-fresh cache
-visible on every node, the KDC allow-list enforced, and failures classified.
+visible on every node, the KDC allow-list enforced, every minted cache validated
+before use, failures classified and rate-limited, and an administrator kill switch.

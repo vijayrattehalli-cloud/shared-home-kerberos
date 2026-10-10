@@ -62,7 +62,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from ._krb import DEFAULT_TOOLS, Krb5, KrbToolError, duration_seconds
+from ._krb import (DEFAULT_TOOLS, MIN_TICKET_VALID_S, Krb5, KrbToolError,
+                   duration_seconds, validate_user_cache)
 
 log = logging.getLogger("krb-credd")
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
@@ -84,6 +85,7 @@ USER_MESSAGES = {
     "kdc_unreachable": "the Kerberos server is unreachable; try again shortly",
     "timeout": "the Kerberos server did not answer in time; try again shortly",
     "clock_skew": "clock skew with the Kerberos server; contact the HPC admins",
+    "bad_ticket": "the Kerberos server returned unexpected tickets; contact the HPC admins",
 }
 
 
@@ -132,6 +134,9 @@ class Config:
     tools: dict                   # absolute paths of kinit / klist / kvno
     s4u_enterprise: bool          # kvno -U (enterprise name) vs -I (principal)
     refresh_workers: int          # users refreshed in parallel per pass
+    min_uid: int = 1000           # never serve system accounts (root, daemons)
+    disable_file: Path = Path("/etc/krb-hpc/disabled")   # kill switch
+    failure_cooldown_s: int = 60  # min seconds between attempts after a failure
 
     @staticmethod
     def load(path: str) -> "Config":
@@ -185,6 +190,9 @@ class Config:
             tools={t: s.get(t, DEFAULT_TOOLS[t]) for t in DEFAULT_TOOLS},
             s4u_enterprise=_name_type(s.get("s4u_name_type", "enterprise")),
             refresh_workers=max(1, s.getint("refresh_workers", 4)),
+            min_uid=s.getint("min_uid", 1000),
+            disable_file=Path(s.get("disable_file", "/etc/krb-hpc/disabled")),
+            failure_cooldown_s=dur("failure_cooldown", "60s"),
         )
 
 
@@ -193,7 +201,8 @@ KNOWN_KEYS = frozenset({
     "delegate_targets", "state_dir", "map_file", "unix_socket", "ccache_path",
     "install_helper", "setpriv", "broker_lifetime", "broker_renew", "renew_margin",
     "min_reissue_interval", "refresh_interval", "refresh_workers", "active_window",
-    "watch_slurm", "squeue", "s4u_name_type", *DEFAULT_TOOLS,
+    "watch_slurm", "squeue", "s4u_name_type", "min_uid", "disable_file",
+    "failure_cooldown", *DEFAULT_TOOLS,
 })
 
 
@@ -269,6 +278,10 @@ class TicketManager:
         self._last_install: dict[int, float] = {}
         self._failures: dict[int, tuple[int, float]] = {}   # uid -> (count, retry_at)
         self._fail_lock = threading.Lock()
+        # Last failed mint per uid: (time, error). Any request inside
+        # failure_cooldown gets the same error without another KDC round trip.
+        self._last_error: dict[int, tuple[float, Exception]] = {}
+        self._warned_margin = False
         # The broker keytab is the single crown jewel: refuse to run unless it
         # is a root-owned, non-symlink, mode-0600 regular file.
         _assert_secure(cfg.broker_keytab, is_dir=False, label="broker_keytab",
@@ -329,13 +342,29 @@ class TicketManager:
 
     def _mint(self, principal: str, cc: Path) -> None:
         """Mint the user's service tickets via constrained delegation (no TGT)
-        into `cc`, atomically. Relies on the broker TGT being fresh."""
+        into `cc`, atomically. Relies on the broker TGT being fresh. The new
+        cache is checked (right user, exactly the delegation targets, no TGT,
+        AES only, enough lifetime) BEFORE it replaces anything: a cache that
+        fails is discarded and the previous one stays in place."""
         self._ensure_broker()
         tmp = cc.with_suffix(".new")
-        self.krb.s4u_mint(str(self.cfg.broker_ccache), principal,
-                          self.cfg.delegate_targets, str(tmp))
-        os.chmod(tmp, 0o600)
+        try:
+            self.krb.s4u_mint(str(self.cfg.broker_ccache), principal,
+                              self.cfg.delegate_targets, str(tmp))
+            os.chmod(tmp, 0o600)
+            info = self.krb.inspect(str(tmp))
+            validate_user_cache(info, principal, self.cfg.realm,
+                                self.cfg.delegate_targets, MIN_TICKET_VALID_S)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         os.replace(tmp, cc)  # atomic
+        life = min(t.expires for t in info.tickets) - time.time()
+        if life < self.cfg.renew_margin_s and not self._warned_margin:
+            self._warned_margin = True
+            log.warning("tickets from AD last %ds, less than renew_margin (%ds): every "
+                        "refresh pass will re-mint them; lower renew_margin",
+                        int(life), self.cfg.renew_margin_s)
 
     def _install(self, pw: pwd.struct_passwd, src: Path) -> Path:
         """Copy the master ccache into the user's home, running AS THE USER
@@ -359,7 +388,16 @@ class TicketManager:
         last = self._last_install.get(uid, 0.0)
         return (time.time() - last) >= self.cfg.min_reissue_s
 
+    def disabled(self) -> bool:
+        """Kill switch: while this file exists nothing is minted or installed."""
+        return self.cfg.disable_file.exists()
+
     def ensure(self, uid: int, force_install: bool = False) -> Path:
+        if self.disabled():
+            raise PermissionError("krb-credd is disabled by the HPC administrators")
+        if uid < self.cfg.min_uid:
+            raise PermissionError(f"uid {uid} is a system account (below min_uid "
+                                  f"{self.cfg.min_uid}) and is never served")
         principal = self.map.principal(uid)
         if not principal:
             raise PermissionError(f"uid {uid} is not enrolled")
@@ -374,7 +412,15 @@ class TicketManager:
             # Service tickets can't be "renewed" -- re-mint them when missing or
             # within the margin of the earliest expiry.
             if exp is None or exp - now < self.cfg.renew_margin_s:
-                self._mint(principal, cc)
+                last = self._last_error.get(uid)
+                if last is not None and now - last[0] < self.cfg.failure_cooldown_s:
+                    raise last[1]       # same answer, no new request to AD
+                try:
+                    self._mint(principal, cc)
+                except Exception as e:
+                    self._last_error[uid] = (time.time(), e)
+                    raise
+                self._last_error.pop(uid, None)
                 changed = True
                 log.info("minted service tickets uid=%d principal=%s", uid, principal)
             dest = self.home_ccache(pw)
@@ -382,6 +428,25 @@ class TicketManager:
                 dest = self._install(pw, cc)
             self._clear_failure(uid)
             return dest
+
+    def status(self, uid: int) -> dict:
+        """What `krb-get --status` reports: never mints, never contacts AD."""
+        st = {"disabled": self.disabled()}
+        try:
+            st["enrolled"] = uid >= self.cfg.min_uid and bool(self.map.principal(uid))
+        except Exception:
+            st["enrolled"] = False
+        exp = self.krb.cache_expiry(str(self.master(uid)))
+        st["expires"] = int(exp) if exp else 0
+        with self._fail_lock:
+            f = self._failures.get(uid)
+        st["retry_at"] = int(f[1]) if f and f[1] > time.time() else 0
+        last = self._last_error.get(uid)
+        if last is not None:
+            cat = getattr(last[1], "category", "")
+            st["last_error"] = USER_MESSAGES.get(cat, "could not obtain ticket")
+            st["last_error_at"] = int(last[0])
+        return st
 
     def touch(self, uid: int) -> None:
         with self._active_lock:
@@ -447,14 +512,19 @@ class TicketManager:
             self.master(uid).unlink(missing_ok=True)
             self.krb.forget(str(self.master(uid)))
             self._clear_failure(uid)
+            self._last_error.pop(uid, None)
             with self._glock:
                 self._locks.pop(uid, None)
             self._last_install.pop(uid, None)
             log.info("retired idle master ccache uid=%d", uid)
         if self.cfg.watch_slurm:
             uids |= self._slurm_uids()
-        uids = {u for u in uids if self._enrolled(u)}
+        uids = {u for u in uids if u >= self.cfg.min_uid and self._enrolled(u)}
         if not uids:
+            return
+        if self.disabled():
+            log.warning("disabled by %s: skipping refresh of %d user(s)",
+                        self.cfg.disable_file, len(uids))
             return
         # Refresh the broker TGT once up front: if it can't be obtained, every
         # user would fail the same way, so log it once and skip this pass.
@@ -514,6 +584,11 @@ class Handler(socketserver.StreamRequestHandler):
             _pid, uid, _gid = struct.unpack("3i", creds)
             try:
                 req = self.rfile.readline(256).decode("ascii", "replace").strip()
+                if req == "STATUS":
+                    st = tm.status(uid)
+                    self.wfile.write(("OK " + " ".join(
+                        f"{k}={str(v).replace(' ', '_')}" for k, v in st.items()) + "\n").encode())
+                    return
                 if req != "GET":
                     raise ValueError("unsupported request")
                 # Always ensure validity; only re-copy into $HOME when due
@@ -568,6 +643,13 @@ def check(cfg_path: str, user: str | None) -> int:
         return 1
     tm = box["tm"]
     step("MIT Kerberos version", lambda: ".".join(map(str, tm.krb.version())))
+
+    def kill_switch():
+        if tm.disabled():
+            raise RuntimeError(f"{cfg.disable_file} exists: nothing will be minted "
+                               "until it is removed")
+        return f"off ({cfg.disable_file} absent)"
+    step("kill switch", kill_switch)
     step(f"uid map {cfg.map_file}", lambda: (tm.map.principal(-1), f"{len(tm.map._map)} enrolled")[1])
 
     def broker():
@@ -587,21 +669,42 @@ def check(cfg_path: str, user: str | None) -> int:
     if user and broker_ok:
         def mint():
             pw = pwd.getpwnam(user)
+            if pw.pw_uid < cfg.min_uid:
+                raise PermissionError(f"{user} (uid {pw.pw_uid}) is below min_uid {cfg.min_uid}")
             principal = tm.map.principal(pw.pw_uid)
             if not principal:
                 raise PermissionError(f"{user} (uid {pw.pw_uid}) is not in {cfg.map_file}")
             out = cfg.state_dir / f".check.{pw.pw_uid}.cc"
             try:
-                tm.krb.s4u_mint(str(cfg.broker_ccache), principal, cfg.delegate_targets, str(out))
+                tm._mint(principal, out)          # includes the cache validation
                 exp = tm.krb.cache_expiry(str(out))
             finally:
                 out.unlink(missing_ok=True)
                 tm.krb.forget(str(out))
-            return (f"{principal} -> {', '.join(cfg.delegate_targets)}; "
+            return (f"{principal} -> {', '.join(cfg.delegate_targets)}; validated; "
                     f"expires {time.ctime(exp) if exp else '?'} (not installed)")
         step(f"constrained delegation for {user}", mint)
     print("all checks passed" if not failed else f"{failed} check(s) failed")
     return 1 if failed else 0
+
+
+def _harden_process() -> None:
+    """No core dumps and no ptrace/proc access by other non-root processes:
+    the daemon handles every user's tickets in memory. (Child processes reset
+    'dumpable' on exec; the systemd unit also sets LimitCORE=0.)"""
+    import resource
+    try:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ValueError, OSError) as e:
+        log.warning("could not disable core dumps: %s", e)
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        PR_SET_DUMPABLE = 4
+        if libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "prctl(PR_SET_DUMPABLE) failed")
+    except (OSError, AttributeError) as e:
+        log.warning("could not mark the process non-dumpable: %s", e)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -617,6 +720,7 @@ def main(argv: list[str] | None = None) -> None:
     if os.geteuid() != 0:
         raise SystemExit("krb-credd must run as root")
     os.umask(0o077)
+    _harden_process()
     if args.check:
         raise SystemExit(check(args.config, args.user))
     # Configuration and file-permission problems are reported as one clear

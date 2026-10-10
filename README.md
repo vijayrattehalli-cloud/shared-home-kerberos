@@ -74,7 +74,7 @@ login/broker tier                         shared filesystem        compute fabri
 | `slurm/taskprolog.krb.sh` | the one line that exports `KRB5CCNAME` on every node |
 | `config/` | `credd.conf`, `krb5.conf`, `uidmap.conf`, `profile.d` hook |
 | `systemd/krb-credd.service` | run the daemon (sandboxed) |
-| `tests/` | `verify-shared-home.sh` (end-to-end, full S4U path) + `test_krb_helpers.py` + `test_daemon.py` + `test_hardening.py` (unit) |
+| `tests/` | `verify-shared-home.sh` (end-to-end, full S4U path) + `test_krb_helpers.py` + `test_daemon.py` + `test_hardening.py` + `test_safety.py` (unit) |
 
 ## Install
 
@@ -122,6 +122,7 @@ sbatch hive-jdbc/...               # see hive_client usage in ARCHITECTURE.md §
 python3 tests/test_krb_helpers.py                       # parsing, error classes, tool wrapper (no Kerberos)
 python3 tests/test_daemon.py                            # config, refresh backoff, admin scripts
 python3 tests/test_hardening.py                         # fail-closed permission checks
+python3 tests/test_safety.py                            # cache validation, kill switch, min_uid, cooldown, status
 sudo MIT_PREFIX=/opt/mitkrb5 KDB_TEST_MODULE_DIR=<krb5-src>/src/plugins/kdb/test \
      tests/verify-shared-home.sh                        # end-to-end (MIT KDC + root)
 ```
@@ -135,12 +136,28 @@ keytab → S4U2Self → S4U2Proxy → install as the user (0600, service tickets
 user → unattended re-mint → atomic broker renewal. It also checks the
 refusals and safeguards: MIT older than 1.19, a writable Kerberos tool, an
 un-enrolled user, a non-delegable user (refused with a clear message and backed
-off in the background), a backend not on the allow-list, and a hostile
-`KRB5CCNAME`/`KRB5_TRACE`/`KRB5_CONFIG`/`LC_ALL`/`TZ` environment. Recorded
+off in the background), a backend not on the allow-list, a hostile
+`KRB5CCNAME`/`KRB5_TRACE`/`KRB5_CONFIG`/`LC_ALL`/`TZ` environment, the kill
+switch, an enrolled system account, the failure cooldown, `krb-get --status`
+and the no-core-dump hardening. Recorded
 output: [`tests/verify-shared-home.output.txt`](tests/verify-shared-home.output.txt).
 
 > Distribution packages don't ship MIT's test KDB module (`test.so`); the
 > script's header shows how to build MIT krb5 from source to get it.
+
+## Safety controls
+
+| Control | Setting | Effect |
+| --- | --- | --- |
+| Cache validation | always on | A minted cache is used only if it is for the expected user, holds exactly the `delegate_targets` tickets, no TGT, AES only, ≥ 5 min of life |
+| Kill switch | `disable_file` (default `/etc/krb-hpc/disabled`) | `touch` it to stop all minting and installs at once; remove it to resume |
+| System accounts | `min_uid` (default 1000) | UIDs below it are never served, even if enrolled |
+| Failure cooldown | `failure_cooldown` (default 60s) | a refused user's repeated requests get the cached error, not another AD round trip |
+| Self-service status | `krb-get --status` | enrollment, ticket expiry, next retry, last error |
+| No core dumps | always on (+ `LimitCORE=0` in the unit) | tickets held in memory never land in a core file |
+
+Tickets already issued stay valid until they expire; none of these controls
+revokes a ticket.
 
 ## Trade-offs
 

@@ -1,5 +1,49 @@
 # Changelog
 
+## 2.3.0
+
+Safety controls informed by a comparison with CRAFT (a PKINIT-based design).
+Same architecture, same MIT tools; all new options have safe defaults.
+
+**Every minted cache is checked before it is used.** After `kvno` mints a
+user's tickets, the daemon reads the new cache (`klist -e -f`) and publishes it
+only if it holds tickets for the expected user (case-insensitive), exactly one
+for each `delegate_targets` entry and nothing else, no TGT, AES encryption only,
+and at least 5 minutes of life. A cache that fails is discarded, the previous
+one stays in place, and the failure is classified `bad_ticket`. This catches
+wrong-account resolution, KDC policy drift and RC4 fallback before any job
+sees the tickets.
+
+**Administrator kill switch.** While `disable_file` (default
+`/etc/krb-hpc/disabled`) exists, nothing is minted or installed: `krb-get` is
+refused and background refresh pauses. Takes effect at once, no restart.
+
+**System accounts are never served.** `min_uid` (default 1000): a UID below it
+is refused even if enrolled by mistake.
+
+**Per-user failure cooldown.** After a failed mint, that user's requests get
+the same error for `failure_cooldown` (default 60 s) without another request to
+AD, so repeated logins or scripts can't hammer the domain controller.
+
+**`krb-get --status`.** Shows the caller whether they are enrolled, when their
+tickets expire, any scheduled retry and the last error. Never mints.
+
+**Process hardening.** The daemon disables core dumps and marks itself
+non-dumpable at start-up; the unit adds `LimitCORE=0`.
+
+**Upgrade note:** the right-hand column of `uidmap.conf` must be the
+account's `sAMAccountName` (bare or `name@REALM`), which is the client name AD
+puts in the tickets. A UPN alias that differs from it now fails validation as
+`bad_ticket`; run `krb-credd --check --user <name>` for each enrolled user after
+upgrading.
+
+**Other**
+- If AD issues tickets shorter than `renew_margin`, the daemon logs one
+  warning (every pass would otherwise re-mint silently).
+- `krb-credd --check` reports the kill switch and validates its test mint.
+- Tests: new `tests/test_safety.py` (8 cases); the end-to-end script adds 8
+  checks (36 in total).
+
 ## 2.2.0
 
 From a critical review for efficiency, simplicity, supportability and

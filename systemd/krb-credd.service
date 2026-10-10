@@ -9,6 +9,8 @@ Restart=on-failure
 RestartSec=5
 User=root
 UMask=0077
+# No core dumps: the daemon holds every user's tickets in memory.
+LimitCORE=0
 RuntimeDirectory=krb-hpc
 StateDirectory=krb-hpc
 

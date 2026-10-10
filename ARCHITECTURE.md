@@ -208,9 +208,19 @@ maximum simplicity — and its defining trade-off (§8).
   default 4); the broker TGT is checked once per pass and the pass is skipped,
   with one log line, if it can't be obtained. A user whose background mint
   fails is backed off (transient errors from 1 to 15 minutes, errors needing an
-  admin from 15 to 60 minutes) instead of being retried every pass; a `krb-get`
-  always tries immediately. Users get a plain-language reason for the common
-  failures; details stay in the log.
+  admin from 15 to 60 minutes) instead of being retried every pass. A `krb-get`
+  tries immediately unless that user's last mint failed within
+  `failure_cooldown` (60 s), in which case it gets the same error without a new
+  request to AD. Users get a plain-language reason for the common failures
+  (`krb-get --status` repeats the last one); details stay in the log.
+- **Validated before use** — after `kvno` writes a user's new cache, the daemon
+  reads it back (`klist -e -f`) and publishes it only if it is for the expected
+  user, holds exactly the `delegate_targets` tickets, no TGT, AES only, and at
+  least 5 minutes of life; otherwise it is discarded (`bad_ticket`) and the
+  previous cache stays.
+- **Safety controls** — a kill switch file (`disable_file`) stops all minting
+  and installs at once; `min_uid` keeps system accounts out of scope; the
+  daemon disables core dumps and marks itself non-dumpable.
 - **Cheap steady state** — `klist` results are memoized per cache file
   (inode, mtime, size); caches are only ever replaced atomically, so an
   unchanged cache costs a `stat()`, not a process, on every request and pass.
@@ -221,8 +231,9 @@ maximum simplicity — and its defining trade-off (§8).
   it returns at the next mint).
 - **Admin check** — `krb-credd --check [--user NAME]` validates the config
   (required options, typos), trusted files and tools, the MIT version, the
-  uid map, the broker TGT, `squeue`, and optionally a real S4U mint for one
-  user — without starting the daemon or touching any home.
+  uid map, the kill switch, the broker TGT, `squeue`, and optionally a real,
+  validated S4U mint for one user — without starting the daemon or touching
+  any home.
 - **`get.py` / `install_ccache.py`** — the `krb-get` client and the
   self-contained install helper (the helper imports nothing beyond the stdlib,
   because the daemon runs it from a libexec path far from the package).

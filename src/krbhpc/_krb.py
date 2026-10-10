@@ -86,6 +86,108 @@ def earliest_expiry(output: str) -> float | None:
     return earliest
 
 
+# Encryption types a minted ticket may use (session key and ticket). AES only:
+# RC4/DES tickets mean an account or policy is misconfigured.
+ALLOWED_ENCTYPES = frozenset({
+    "aes256-cts-hmac-sha1-96", "aes128-cts-hmac-sha1-96",
+    "aes256-cts-hmac-sha384-192", "aes128-cts-hmac-sha256-128",
+})
+
+
+@dataclass(frozen=True)
+class Ticket:
+    server: str               # service principal the ticket is for
+    expires: float            # epoch seconds
+    client: str | None        # set only when it differs from the default principal
+    skey_etype: str | None
+    tkt_etype: str | None
+
+
+@dataclass(frozen=True)
+class CacheInfo:
+    default_principal: str | None
+    tickets: tuple[Ticket, ...]
+
+
+def parse_klist_details(output: str) -> CacheInfo:
+    """Parse `klist -e -f` output (LC_ALL=C, TZ=UTC0) into the default
+    principal and one Ticket per entry. MIT prints, per ticket: a times +
+    service line, then optional tab-indented lines ("for client X",
+    "renew until ...", "Flags: ..., Etype (skey, tkt): A, B")."""
+    default = None
+    tickets: list[dict] = []
+    for line in output.splitlines():
+        if line.startswith("Default principal:"):
+            default = line.split(":", 1)[1].strip()
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        if not line[:1].isspace() and len(parts) >= 5:
+            try:
+                expires = _parse_klist_time(parts[2], parts[3])
+            except ValueError:
+                continue
+            tickets.append({"server": parts[4], "expires": expires, "client": None,
+                            "skey_etype": None, "tkt_etype": None})
+            continue
+        if not tickets or not line[:1].isspace():
+            continue
+        cur = tickets[-1]
+        text = line.strip()
+        if text.startswith("for client "):
+            cur["client"] = text[len("for client "):].split(",")[0].strip()
+        m = re.search(r"Etype \(skey, tkt\): ([^,\s]+), ([^,\s]+)", text)
+        if m:
+            cur["skey_etype"], cur["tkt_etype"] = m.group(1), m.group(2)
+    return CacheInfo(default, tuple(Ticket(**t) for t in tickets))
+
+
+# A minted ticket with less life than this is refused outright (expired or
+# about to be: clock skew or a broken KDC policy).
+MIN_TICKET_VALID_S = 300
+
+
+def _qualify(principal: str, realm: str) -> str:
+    return principal if "@" in principal else f"{principal}@{realm}"
+
+
+def validate_user_cache(info: CacheInfo, expected_principal: str, realm: str,
+                        targets: list[str], min_valid_s: int,
+                        now: float | None = None) -> None:
+    """Fail closed unless a freshly minted cache holds exactly what was asked
+    for: tickets for the expected user (compared case-insensitively), one for
+    each delegation target and nothing else, no TGT, AES only, and at
+    least min_valid_s of life left. Raises
+    KrbToolError(category="bad_ticket") naming the first problem found."""
+    now = time.time() if now is None else now
+
+    def bad(why: str) -> None:
+        raise KrbToolError("kvno", "minted cache rejected", why, "bad_ticket")
+
+    want = _qualify(expected_principal, realm)
+    if not info.default_principal:
+        bad("cache has no default principal")
+    if info.default_principal.lower() != want.lower():
+        bad(f"tickets are for {info.default_principal}, expected {want}")
+    servers = [t.server for t in info.tickets]
+    if any(s.lower().startswith("krbtgt/") for s in servers):
+        bad("cache contains a ticket-granting ticket")
+    if sorted(s.lower() for s in servers) != sorted(t.lower() for t in targets):
+        bad(f"cache holds {', '.join(servers) or 'no tickets'}; expected {', '.join(targets)}")
+    for t in info.tickets:
+        if t.client and t.client.lower() != want.lower():
+            bad(f"ticket for {t.server} names client {t.client}")
+        for kind, et in (("session key", t.skey_etype), ("ticket", t.tkt_etype)):
+            if et is None:
+                bad(f"no encryption type reported for {t.server}")
+            if et not in ALLOWED_ENCTYPES:
+                bad(f"{t.server} {kind} uses {et}; only AES is allowed")
+        if t.expires - now < min_valid_s:
+            bad(f"ticket for {t.server} expires in {int(t.expires - now)}s "
+                f"(minimum {min_valid_s}s)")
+
+
 def parse_mit_version(text: str) -> tuple[int, ...] | None:
     """'Kerberos 5 version 1.20.1' (MIT `klist -V`) -> (1, 20, 1).
     Returns None for anything else (e.g. Heimdal)."""
@@ -110,6 +212,8 @@ _CATEGORIES = [
     ("bad_cache", ("no credentials cache found", "credentials cache file", "matching credential not found",
                    "ticket expired")),
 ]
+# "bad_ticket" (a minted cache failed validate_user_cache) is assigned
+# directly, never inferred from tool output; it needs an admin.
 # Categories a later retry might fix on its own; the others need an admin.
 TRANSIENT = frozenset({"kdc_unreachable", "timeout", "bad_cache"})
 
@@ -230,6 +334,15 @@ class Krb5:
     def cache_expiry(self, ccache: str) -> float | None:
         """Earliest expiry across all (service) tickets in a cache, or None."""
         return self._klist_cached("exp", ccache, earliest_expiry)
+
+    def inspect(self, ccache: str) -> CacheInfo:
+        """Principal, services, expiries and encryption types of every ticket
+        in a cache (not memoized: used once on each freshly minted cache)."""
+        r = self.run("klist", "-e", "-f", "-c", f"FILE:{ccache}")
+        if r.returncode != 0:
+            raise KrbToolError("klist", "cannot read minted cache",
+                               r.stderr.strip() or "unknown error", "bad_ticket")
+        return parse_klist_details(r.stdout)
 
     def kinit_keytab(self, principal: str, keytab: str, ccache: str,
                      lifetime: str, renew_lifetime: str) -> None:

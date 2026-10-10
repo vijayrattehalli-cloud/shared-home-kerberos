@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "krbhpc-shared-home"
-version = "2.2.0"
+version = "2.3.0"
 description = "krb-credd: a Kerberos client broker (root) for a CAC / UID-GID HPC cluster -- S4U constrained-delegation client of Active Directory, shared-home ticket delivery (pure Python)"
 readme = "README.md"
 requires-python = ">=3.9"

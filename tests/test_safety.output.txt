@@ -1,0 +1,10 @@
+ok   test_config_safety_options
+ok   test_kill_switch_min_uid_and_cooldown
+ok   test_krb_get_status_output
+ok   test_mint_discards_a_cache_that_fails_validation
+ok   test_parse_and_accept_good_cache
+ok   test_process_hardening
+ok   test_rejects_weak_crypto_and_short_life
+ok   test_rejects_wrong_or_extra_tickets
+
+all 8 safety tests passed
