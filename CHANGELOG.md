@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `tests/verify-ad.sh`: an acceptance test to run on the broker node against a
+  real Active Directory. Non-destructive; checks the broker keytab and TGT, a
+  real S4U mint per user with `kvno -U` and `-I` (reporting the exact name AD
+  puts in the tickets, encryption types and lifetimes, and whether the 2.3.0
+  checks accept them), Protected Users and allow-list refusals, `--check`,
+  end-to-end `krb-get`/`--status`/web service, and optionally the kill switch.
+  Saves a PASS/FAIL report. Dry-run against the MIT test KDC: 23/23.
+
 ## 2.3.0
 
 Safety controls informed by a comparison with CRAFT (a PKINIT-based design).

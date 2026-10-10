@@ -125,7 +125,14 @@ python3 tests/test_hardening.py                         # fail-closed permission
 python3 tests/test_safety.py                            # cache validation, kill switch, min_uid, cooldown, status
 sudo MIT_PREFIX=/opt/mitkrb5 KDB_TEST_MODULE_DIR=<krb5-src>/src/plugins/kdb/test \
      tests/verify-shared-home.sh                        # end-to-end (MIT KDC + root)
+sudo tests/verify-ad.sh --user jdoe --refused ptest     # acceptance test against YOUR Active Directory
 ```
+
+`tests/verify-ad.sh` is the one test that needs real AD: run it on the broker
+node after deployment (see the test-lab runbook). It is non-destructive and
+reports how your AD names users in tickets, which encryption types and
+lifetimes it issues, and whether Protected Users and the delegation allow-list
+are enforced, then drives the running daemon end to end.
 
 The end-to-end test runs the **real daemon** against a throwaway MIT KDC that
 uses MIT's *test* database module, which — unlike the default file database —
