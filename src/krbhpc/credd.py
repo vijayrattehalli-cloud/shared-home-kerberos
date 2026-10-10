@@ -386,13 +386,14 @@ class TicketManager:
         """Inspect a cache and apply validate_user_cache. Tickets may name the
         uidmap principal or the Linux user (AD returns the sAMAccountName,
         which by policy matches the Linux name, even when uidmap holds a UPN).
-        In ticket_checks=warn mode problems are logged, not raised."""
+        ticket_checks=warn relaxes only the name checks (see
+        validate_user_cache). Warnings are logged at most once a day each."""
         info = self.krb.inspect(str(path))
         warns = validate_user_cache(info, [principal, user], self.cfg.realm,
                                     self.cfg.delegate_targets, MIN_TICKET_VALID_S,
                                     strict=self.cfg.ticket_checks_enforce)
         now = time.time()
-        for w in warns:     # each distinct warning at most once a day
+        for w in warns:
             if now - self._warned.get(w, 0.0) >= 86400:
                 self._warned[w] = now
                 log.warning("ticket check for %s: %s", principal, w)
@@ -401,9 +402,9 @@ class TicketManager:
     def _mint(self, principal: str, cc: Path, user: str | None = None) -> None:
         """Mint the user's service tickets via constrained delegation (no TGT)
         into `cc`, atomically. Relies on the broker TGT being fresh. The new
-        cache is checked (right user, exactly the delegation targets, no TGT,
-        AES only, enough lifetime) BEFORE it replaces anything: a cache that
-        fails is discarded and the previous one stays in place."""
+        cache is checked (right user, every delegation target, no TGT, AES
+        session key, enough lifetime) BEFORE it replaces anything: a cache
+        that fails is discarded and the previous one stays in place."""
         self._ensure_broker()
         tmp = cc.with_suffix(".new")
         try:

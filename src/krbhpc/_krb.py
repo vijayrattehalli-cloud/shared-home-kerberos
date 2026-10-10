@@ -86,8 +86,9 @@ def earliest_expiry(output: str) -> float | None:
     return earliest
 
 
-# Encryption types a minted ticket may use (session key and ticket). AES only:
-# RC4/DES tickets mean an account or policy is misconfigured.
+# AES encryption types. A minted ticket's session key must be one of these;
+# a ticket encrypted with anything else (the target service account's choice)
+# is reported as a warning.
 ALLOWED_ENCTYPES = frozenset({
     "aes256-cts-hmac-sha1-96", "aes128-cts-hmac-sha1-96",
     "aes256-cts-hmac-sha384-192", "aes128-cts-hmac-sha256-128",

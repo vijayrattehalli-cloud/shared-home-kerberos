@@ -36,7 +36,7 @@ PASS  krb-get --status explains the last failure to the user
 PASS  an enrolled system account (uid 1) is still refused (min_uid)
 PASS  --check flags an enrolled uid below min_uid before it bites
 PASS  --check sends nothing to AD while the kill switch is on
-PASS  kill switch: with /tmp/shpy.YjFl/disabled present, krb-get is refused at once (no restart)
+PASS  kill switch: with /tmp/shpy.3NQf/disabled present, krb-get is refused at once (no restart)
 PASS  kill switch also pauses the background refresh
 PASS  removing the kill switch resumes service
 --- Section 5: krb-credd --check (admin validation) ---
