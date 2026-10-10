@@ -132,7 +132,9 @@ sudo tests/verify-ad.sh --user jdoe --refused ptest     # acceptance test agains
 node after deployment (see the test-lab runbook). It is non-destructive and
 reports how your AD names users in tickets, which encryption types and
 lifetimes it issues, and whether Protected Users and the delegation allow-list
-are enforced, then drives the running daemon end to end.
+are enforced, then drives the running daemon end to end. How far the design
+can be trusted against Microsoft AD before that lab run, component by
+component, is in [`docs/ad-confidence-assessment.md`](docs/ad-confidence-assessment.md).
 
 The end-to-end test runs the **real daemon** against a throwaway MIT KDC that
 uses MIT's *test* database module, which — unlike the default file database —
