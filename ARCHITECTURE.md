@@ -209,15 +209,17 @@ maximum simplicity — and its defining trade-off (§8).
   with one log line, if it can't be obtained. A user whose background mint
   fails is backed off (transient errors from 1 to 15 minutes, errors needing an
   admin from 15 to 60 minutes) instead of being retried every pass. A `krb-get`
-  tries immediately unless that user's last mint failed within
-  `failure_cooldown` (60 s), in which case it gets the same error without a new
-  request to AD. Users get a plain-language reason for the common failures
+  tries immediately unless that user's last mint failed, for a reason only an
+  admin can fix, within `failure_cooldown` (60 s); then it gets the same error
+  without a new request to AD. Users get a plain-language reason for the common failures
   (`krb-get --status` repeats the last one); details stay in the log.
 - **Validated before use** — after `kvno` writes a user's new cache, the daemon
   reads it back (`klist -e -f`) and publishes it only if it is for the expected
-  user, holds exactly the `delegate_targets` tickets, no TGT, AES only, and at
-  least 5 minutes of life; otherwise it is discarded (`bad_ticket`) and the
-  previous cache stays.
+  user (uidmap principal or `<linux name>@REALM`), covers every
+  `delegate_targets` service, holds no TGT, has an AES session key and at least
+  5 minutes of life; otherwise it is discarded (`bad_ticket`) and the previous
+  cache stays. Caches minted before start-up or a uidmap change are checked on
+  first use.
 - **Safety controls** — a kill switch file (`disable_file`) stops all minting
   and installs at once; `min_uid` keeps system accounts out of scope; the
   daemon disables core dumps and marks itself non-dumpable.

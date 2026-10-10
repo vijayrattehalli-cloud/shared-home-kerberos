@@ -149,10 +149,10 @@ output: [`tests/verify-shared-home.output.txt`](tests/verify-shared-home.output.
 
 | Control | Setting | Effect |
 | --- | --- | --- |
-| Cache validation | always on | A minted cache is used only if it is for the expected user, holds exactly the `delegate_targets` tickets, no TGT, AES only, ≥ 5 min of life |
+| Cache validation | `ticket_checks` (default `enforce`) | A minted cache is used only if it is for the expected user, covers every `delegate_targets` service, holds no TGT, has an AES session key and ≥ 5 min of life; RC4 back-end tickets and extra entries are logged |
 | Kill switch | `disable_file` (default `/etc/krb-hpc/disabled`) | `touch` it to stop all minting and installs at once; remove it to resume |
-| System accounts | `min_uid` (default 1000) | UIDs below it are never served, even if enrolled |
-| Failure cooldown | `failure_cooldown` (default 60s) | a refused user's repeated requests get the cached error, not another AD round trip |
+| System accounts | `min_uid` (default `UID_MIN` from `/etc/login.defs`) | UIDs below it are never served, even if enrolled |
+| Failure cooldown | `failure_cooldown` (default 60s) | after an admin-fixable failure, repeated requests get the cached error, not another AD round trip; transient errors always retry |
 | Self-service status | `krb-get --status` | enrollment, ticket expiry, next retry, last error |
 | No core dumps | always on (+ `LimitCORE=0` in the unit) | tickets held in memory never land in a core file |
 

@@ -137,6 +137,7 @@ class Config:
     min_uid: int = 1000           # never serve system accounts (root, daemons)
     disable_file: Path = Path("/etc/krb-hpc/disabled")   # kill switch
     failure_cooldown_s: int = 60  # min seconds between attempts after a failure
+    ticket_checks_enforce: bool = True   # False = "warn": log problems, still publish
 
     @staticmethod
     def load(path: str) -> "Config":
@@ -165,6 +166,15 @@ class Config:
         targets = [t for t in s.get("delegate_targets", "").replace(",", " ").split()]
         # Qualify any bare SPN with the realm so AD/auth all agree on the name.
         targets = [t if "@" in t else f"{t}@{realm}" for t in targets]
+        targets = list(dict.fromkeys(targets))          # drop duplicates, keep order
+        if not targets:
+            raise ValueError(f"{path}: delegate_targets lists no services")
+        disable_file = Path(s.get("disable_file", "/etc/krb-hpc/disabled"))
+        if not disable_file.is_absolute():
+            raise ValueError(f"{path}: disable_file must be an absolute path")
+        checks = s.get("ticket_checks", "enforce").strip().lower()
+        if checks not in ("enforce", "warn"):
+            raise ValueError(f"{path}: ticket_checks must be 'enforce' or 'warn', not {checks!r}")
         return Config(
             realm=realm,
             krb5_conf=s.get("krb5_conf", "/etc/krb5.conf"),
@@ -190,9 +200,10 @@ class Config:
             tools={t: s.get(t, DEFAULT_TOOLS[t]) for t in DEFAULT_TOOLS},
             s4u_enterprise=_name_type(s.get("s4u_name_type", "enterprise")),
             refresh_workers=max(1, s.getint("refresh_workers", 4)),
-            min_uid=s.getint("min_uid", 1000),
-            disable_file=Path(s.get("disable_file", "/etc/krb-hpc/disabled")),
+            min_uid=s.getint("min_uid", _login_defs_uid_min()),
+            disable_file=disable_file,
             failure_cooldown_s=dur("failure_cooldown", "60s"),
+            ticket_checks_enforce=(checks == "enforce"),
         )
 
 
@@ -202,8 +213,26 @@ KNOWN_KEYS = frozenset({
     "install_helper", "setpriv", "broker_lifetime", "broker_renew", "renew_margin",
     "min_reissue_interval", "refresh_interval", "refresh_workers", "active_window",
     "watch_slurm", "squeue", "s4u_name_type", "min_uid", "disable_file",
-    "failure_cooldown", *DEFAULT_TOOLS,
+    "failure_cooldown", "ticket_checks", *DEFAULT_TOOLS,
 })
+
+# Failures worth remembering for failure_cooldown: ones only an admin can fix.
+# Transient errors (KDC unreachable, timeout) are always retried at once.
+COOLDOWN_CATEGORIES = frozenset({"not_delegable", "unknown_principal", "bad_ticket"})
+
+
+def _login_defs_uid_min(path: str = "/etc/login.defs") -> int:
+    """Default min_uid: the system's own first regular-user UID (UID_MIN in
+    /etc/login.defs; 1000 on current distributions, 500 on some older ones)."""
+    try:
+        with open(path) as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == "UID_MIN" and parts[1].isdigit():
+                    return int(parts[1])
+    except OSError:
+        pass
+    return 1000
 
 
 def _name_type(value: str) -> bool:
@@ -218,8 +247,10 @@ class UidMap:
 
     With constrained delegation the daemon impersonates the user's own AD
     identity (e.g. jdoe@CORP.EXAMPLE.MIL), so the right-hand column is the
-    user's real sAMAccountName/UPN -- NOT an hpc-<user> shadow account. The
-    account must be delegation-eligible (not in Protected Users, not flagged
+    user's real sAMAccountName -- NOT an hpc-<user> shadow account. A UPN also
+    works when the Linux name equals the sAMAccountName (AD puts the
+    sAMAccountName in the tickets); write a user of another domain as
+    name@THAT.REALM. The account must be delegation-eligible (not in Protected Users, not flagged
     'sensitive -- cannot be delegated').
 
     Re-read on mtime change (enrollment needs no restart). Rejected unless the
@@ -282,6 +313,8 @@ class TicketManager:
         # failure_cooldown gets the same error without another KDC round trip.
         self._last_error: dict[int, tuple[float, Exception]] = {}
         self._warned_margin = False
+        self._warned: dict[str, float] = {}  # validation warning -> last logged
+        self._checked: dict[int, str] = {}   # uid -> principal its master cache passed for
         # The broker keytab is the single crown jewel: refuse to run unless it
         # is a root-owned, non-symlink, mode-0600 regular file.
         _assert_secure(cfg.broker_keytab, is_dir=False, label="broker_keytab",
@@ -293,6 +326,15 @@ class TicketManager:
         # non-writable, or a local attacker who could edit it would run code
         # as any user. (setpriv is a trusted system binary; left as-is.)
         _assert_secure(Path(cfg.install_helper), is_dir=False, label="install_helper")
+        # Only root may be able to create the kill-switch file: its directory
+        # must pass the usual checks, and no ancestor may let others swap it
+        # (root-owned, and not group/world writable unless sticky, like /tmp).
+        _assert_secure(cfg.disable_file.parent, is_dir=True, label="disable_file directory")
+        for anc in cfg.disable_file.parent.parents:
+            st = anc.lstat()
+            if st.st_uid != 0 or (st.st_mode & 0o022 and not st.st_mode & 0o1000):
+                raise PermissionError(f"disable_file: {anc} must be root-owned and not "
+                                      "writable by others (or sticky)")
         self._seed_active()
 
     def _seed_active(self) -> None:
@@ -340,7 +382,23 @@ class TicketManager:
             os.replace(tmp, cc)
             log.info("acquired broker TGT principal=%s", self.cfg.broker_principal)
 
-    def _mint(self, principal: str, cc: Path) -> None:
+    def _validate(self, path: Path, principal: str, user: str):
+        """Inspect a cache and apply validate_user_cache. Tickets may name the
+        uidmap principal or the Linux user (AD returns the sAMAccountName,
+        which by policy matches the Linux name, even when uidmap holds a UPN).
+        In ticket_checks=warn mode problems are logged, not raised."""
+        info = self.krb.inspect(str(path))
+        warns = validate_user_cache(info, [principal, user], self.cfg.realm,
+                                    self.cfg.delegate_targets, MIN_TICKET_VALID_S,
+                                    strict=self.cfg.ticket_checks_enforce)
+        now = time.time()
+        for w in warns:     # each distinct warning at most once a day
+            if now - self._warned.get(w, 0.0) >= 86400:
+                self._warned[w] = now
+                log.warning("ticket check for %s: %s", principal, w)
+        return info
+
+    def _mint(self, principal: str, cc: Path, user: str | None = None) -> None:
         """Mint the user's service tickets via constrained delegation (no TGT)
         into `cc`, atomically. Relies on the broker TGT being fresh. The new
         cache is checked (right user, exactly the delegation targets, no TGT,
@@ -352,14 +410,12 @@ class TicketManager:
             self.krb.s4u_mint(str(self.cfg.broker_ccache), principal,
                               self.cfg.delegate_targets, str(tmp))
             os.chmod(tmp, 0o600)
-            info = self.krb.inspect(str(tmp))
-            validate_user_cache(info, principal, self.cfg.realm,
-                                self.cfg.delegate_targets, MIN_TICKET_VALID_S)
+            info = self._validate(tmp, principal, user or principal)
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
         os.replace(tmp, cc)  # atomic
-        life = min(t.expires for t in info.tickets) - time.time()
+        life = min((t.expires for t in info.tickets), default=0) - time.time()
         if life < self.cfg.renew_margin_s and not self._warned_margin:
             self._warned_margin = True
             log.warning("tickets from AD last %ds, less than renew_margin (%ds): every "
@@ -411,16 +467,32 @@ class TicketManager:
             now = time.time()
             # Service tickets can't be "renewed" -- re-mint them when missing or
             # within the margin of the earliest expiry.
-            if exp is None or exp - now < self.cfg.renew_margin_s:
+            need = exp is None or exp - now < self.cfg.renew_margin_s
+            if not need and self._checked.get(uid) != principal:
+                # First use since start-up of a master minted earlier (perhaps
+                # by an older version): check it once; re-mint if it fails.
+                try:
+                    self._validate(cc, principal, pw.pw_name)
+                    self._checked[uid] = principal
+                except KrbToolError as e:
+                    log.warning("existing cache for uid=%d failed validation, re-minting: %s", uid, e)
+                    need = True
+            if need:
                 last = self._last_error.get(uid)
                 if last is not None and now - last[0] < self.cfg.failure_cooldown_s:
-                    raise last[1]       # same answer, no new request to AD
+                    e = last[1]         # same answer, no new request to AD
+                    again = KrbToolError(e.tool, "unchanged since the last attempt",
+                                         e.detail, e.category)
+                    again.from_cooldown = True
+                    raise again
                 try:
-                    self._mint(principal, cc)
-                except Exception as e:
-                    self._last_error[uid] = (time.time(), e)
+                    self._mint(principal, cc, pw.pw_name)
+                except KrbToolError as e:
+                    if e.category in COOLDOWN_CATEGORIES:
+                        self._last_error[uid] = (time.time(), e)
                     raise
                 self._last_error.pop(uid, None)
+                self._checked[uid] = principal
                 changed = True
                 log.info("minted service tickets uid=%d principal=%s", uid, principal)
             dest = self.home_ccache(pw)
@@ -443,7 +515,7 @@ class TicketManager:
         st["retry_at"] = int(f[1]) if f and f[1] > time.time() else 0
         last = self._last_error.get(uid)
         if last is not None:
-            cat = getattr(last[1], "category", "")
+            cat = getattr(last[1], "category", "")  # only admin-fixable errors are kept
             st["last_error"] = USER_MESSAGES.get(cat, "could not obtain ticket")
             st["last_error_at"] = int(last[0])
         return st
@@ -484,6 +556,8 @@ class TicketManager:
         try:
             self.ensure(uid)
         except Exception as e:
+            if getattr(e, "from_cooldown", False):
+                return          # no new attempt was made; don't grow the backoff
             delay = self._record_failure(uid, e)
             cat = getattr(e, "category", type(e).__name__)
             log.error("refresh uid=%d failed (%s; next try in %ds): %s", uid, cat, delay, e)
@@ -513,6 +587,7 @@ class TicketManager:
             self.krb.forget(str(self.master(uid)))
             self._clear_failure(uid)
             self._last_error.pop(uid, None)
+            self._checked.pop(uid, None)
             with self._glock:
                 self._locks.pop(uid, None)
             self._last_install.pop(uid, None)
@@ -650,7 +725,14 @@ def check(cfg_path: str, user: str | None) -> int:
                                "until it is removed")
         return f"off ({cfg.disable_file} absent)"
     step("kill switch", kill_switch)
-    step(f"uid map {cfg.map_file}", lambda: (tm.map.principal(-1), f"{len(tm.map._map)} enrolled")[1])
+    def uid_map():
+        tm.map.principal(-1)
+        low = sorted(u for u in tm.map._map if u < cfg.min_uid)
+        if low:
+            raise PermissionError(f"enrolled uid(s) {', '.join(map(str, low))} are below "
+                                  f"min_uid {cfg.min_uid} and will be refused")
+        return f"{len(tm.map._map)} enrolled; min_uid {cfg.min_uid}"
+    step(f"uid map {cfg.map_file}", uid_map)
 
     def broker():
         tm._ensure_broker()
@@ -666,7 +748,11 @@ def check(cfg_path: str, user: str | None) -> int:
             return f"{len(set(r.stdout.split()))} user(s) with jobs"
         step(f"squeue ({cfg.squeue})", slurm)
 
-    if user and broker_ok:
+    if user and broker_ok and tm.disabled():
+        def skipped():
+            raise RuntimeError("skipped: the kill switch is on (no request sent to AD)")
+        step(f"constrained delegation for {user}", skipped)
+    elif user and broker_ok:
         def mint():
             pw = pwd.getpwnam(user)
             if pw.pw_uid < cfg.min_uid:
@@ -676,7 +762,7 @@ def check(cfg_path: str, user: str | None) -> int:
                 raise PermissionError(f"{user} (uid {pw.pw_uid}) is not in {cfg.map_file}")
             out = cfg.state_dir / f".check.{pw.pw_uid}.cc"
             try:
-                tm._mint(principal, out)          # includes the cache validation
+                tm._mint(principal, out, user)    # includes the cache validation
                 exp = tm.krb.cache_expiry(str(out))
             finally:
                 out.unlink(missing_ok=True)
@@ -733,6 +819,14 @@ def main(argv: list[str] | None = None) -> None:
         version = tm.krb.version()
     except (OSError, ValueError, RuntimeError, KeyError) as e:
         raise SystemExit(f"krb-credd: {e}")
+    try:
+        tm.map.principal(-1)
+        low = sorted(u for u in tm.map._map if u < cfg.min_uid)
+        if low:
+            log.warning("enrolled uid(s) %s are below min_uid %d and will be refused",
+                        ", ".join(map(str, low)), cfg.min_uid)
+    except Exception:
+        pass
     log.info("MIT Kerberos %s tools: %s", ".".join(map(str, version)),
              ", ".join(f"{k}={v}" for k, v in tm.krb.tools.items()))
     # Acquire the broker TGT up front so a bad keytab/principal shows up in the

@@ -7,23 +7,31 @@ Same architecture, same MIT tools; all new options have safe defaults.
 
 **Every minted cache is checked before it is used.** After `kvno` mints a
 user's tickets, the daemon reads the new cache (`klist -e -f`) and publishes it
-only if it holds tickets for the expected user (case-insensitive), exactly one
-for each `delegate_targets` entry and nothing else, no TGT, AES encryption only,
-and at least 5 minutes of life. A cache that fails is discarded, the previous
-one stays in place, and the failure is classified `bad_ticket`. This catches
-wrong-account resolution, KDC policy drift and RC4 fallback before any job
-sees the tickets.
+only if the tickets are for the expected user (the uidmap principal or
+`<linux name>@REALM`, case-insensitive), cover every `delegate_targets` entry,
+contain no TGT, use an AES session key, and have at least 5 minutes of life. A
+cache that fails is discarded, the previous one stays in place, and the
+failure is classified `bad_ticket`. Extra non-TGT entries and a back-end
+ticket encrypted with RC4 (a setting on the target service account) are logged
+as warnings, not refused. Caches minted before an upgrade or a uidmap change
+are checked on first use. `ticket_checks = warn` relaxes only the two
+name-matching checks, for sites still sorting out name formats.
 
 **Administrator kill switch.** While `disable_file` (default
 `/etc/krb-hpc/disabled`) exists, nothing is minted or installed: `krb-get` is
-refused and background refresh pauses. Takes effect at once, no restart.
+refused, background refresh pauses, and `--check` sends nothing to AD. Takes
+effect at once, no restart. The path must be absolute and only root may be
+able to create it (checked at start-up).
 
-**System accounts are never served.** `min_uid` (default 1000): a UID below it
-is refused even if enrolled by mistake.
+**System accounts are never served.** `min_uid` (default: `UID_MIN` from
+`/etc/login.defs`, else 1000): a UID below it is refused even if enrolled by
+mistake. Start-up and `--check` report any enrolled UID below the floor.
 
-**Per-user failure cooldown.** After a failed mint, that user's requests get
+**Per-user failure cooldown.** After a failure only an admin can fix (account
+not delegable, unknown principal, rejected cache), that user's requests get
 the same error for `failure_cooldown` (default 60 s) without another request to
-AD, so repeated logins or scripts can't hammer the domain controller.
+AD. Transient errors (KDC unreachable, timeout) are always retried at once, and
+cooldown answers don't lengthen the background backoff.
 
 **`krb-get --status`.** Shows the caller whether they are enrolled, when their
 tickets expire, any scheduled retry and the last error. Never mints.
@@ -31,18 +39,24 @@ tickets expire, any scheduled retry and the last error. Never mints.
 **Process hardening.** The daemon disables core dumps and marks itself
 non-dumpable at start-up; the unit adds `LimitCORE=0`.
 
-**Upgrade note:** the right-hand column of `uidmap.conf` must be the
-account's `sAMAccountName` (bare or `name@REALM`), which is the client name AD
-puts in the tickets. A UPN alias that differs from it now fails validation as
-`bad_ticket`; run `krb-credd --check --user <name>` for each enrolled user after
-upgrading.
+**Upgrade notes**
+- Tickets must name the uidmap principal or `<linux name>@REALM`. A user of
+  another AD domain needs a fully qualified uidmap entry (`jdoe@EAST.CORP`).
+  Run `krb-credd --check --user <name>` for a few enrolled users after
+  upgrading; set `ticket_checks = warn` temporarily if names need sorting out.
+- Enrolled users with UIDs below `min_uid` are refused; `--check` lists them.
 
 **Other**
 - If AD issues tickets shorter than `renew_margin`, the daemon logs one
   warning (every pass would otherwise re-mint silently).
 - `krb-credd --check` reports the kill switch and validates its test mint.
-- Tests: new `tests/test_safety.py` (8 cases); the end-to-end script adds 8
-  checks (36 in total).
+- Duplicate `delegate_targets` are ignored; an empty list is a config error.
+- Tests: new `tests/test_safety.py` (12 cases); the end-to-end script adds 10
+  checks (38 in total) and passes on MIT 1.20.1 and 1.21.3 (RHEL 9's version),
+  in enterprise and principal name modes.
+- Revised after an independent review of the first 2.3.0 draft, which found
+  the original checks too strict for common AD setups (UPN mappings, RC4
+  back-end tickets) and the cooldown replaying transient errors.
 
 ## 2.2.0
 

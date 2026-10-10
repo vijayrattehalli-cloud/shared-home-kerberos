@@ -34,7 +34,9 @@ PASS  krb-get --status shows enrollment and ticket expiry without minting
 PASS  failure cooldown: 3 requests from a refused user cost 0 KDC attempt(s), not 3
 PASS  krb-get --status explains the last failure to the user
 PASS  an enrolled system account (uid 1) is still refused (min_uid)
-PASS  kill switch: with /tmp/shpy.pm1N/disabled present, krb-get is refused at once (no restart)
+PASS  --check flags an enrolled uid below min_uid before it bites
+PASS  --check sends nothing to AD while the kill switch is on
+PASS  kill switch: with /tmp/shpy.YjFl/disabled present, krb-get is refused at once (no restart)
 PASS  kill switch also pauses the background refresh
 PASS  removing the kill switch resumes service
 --- Section 5: krb-credd --check (admin validation) ---

@@ -317,17 +317,24 @@ echo "--- Section 4b: safety controls ---"
 OUT=$(as shuser python3 "$GET" --status 2>&1)
 echo "$OUT" | grep -q "enrolled: *True" && echo "$OUT" | grep -q "tickets expire: *20[0-9-]* [0-9:]* (in " \
   && pass "krb-get --status shows enrollment and ticket expiry without minting" || fail "status: $OUT"
-C0=$(grep -c "protected" "$SHIM/kvno.calls" 2>/dev/null || echo 0)
+C0=$(grep -c "protected" "$SHIM/kvno.calls" 2>/dev/null); C0=${C0:-0}
 for i in 1 2 3; do OUT=$(as protected python3 "$GET" 2>&1); echo "$OUT" | grep -q "cannot be delegated" || fail "protected #$i: $OUT"; done
-C1=$(grep -c "protected" "$SHIM/kvno.calls" 2>/dev/null || echo 0)
-[ "$(grep -c shuser "$SHIM/kvno.calls" 2>/dev/null || echo 0)" -gt 0 ] && [ $((C1 - C0)) -le 1 ] && pass "failure cooldown: 3 requests from a refused user cost $((C1 - C0)) KDC attempt(s), not 3" \
+C1=$(grep -c "protected" "$SHIM/kvno.calls" 2>/dev/null); C1=${C1:-0}
+NSH=$(grep -c shuser "$SHIM/kvno.calls" 2>/dev/null); NSH=${NSH:-0}
+[ "$NSH" -gt 0 ] && [ $((C1 - C0)) -le 1 ] && pass "failure cooldown: 3 requests from a refused user cost $((C1 - C0)) KDC attempt(s), not 3" \
   || fail "cooldown: $((C1 - C0)) kvno calls for 3 requests"
 OUT=$(as protected python3 "$GET" --status 2>&1)
 echo "$OUT" | grep -q "last error: *your account cannot be delegated" && pass "krb-get --status explains the last failure to the user" || fail "status protected: $OUT"
 printf 'daemon daemon\n' >> "$R/uidmap"
 OUT=$(as daemon python3 "$GET" 2>&1); [ $? -eq 1 ] && echo "$OUT" | grep -q "system account" \
   && pass "an enrolled system account (uid $(id -u daemon)) is still refused (min_uid)" || fail "min_uid: $OUT"
+OUT=$(python3 "$CREDD" -c "$R/credd.conf" --check 2>/dev/null)
+echo "$OUT" | grep -q "FAIL  uid map .*below min_uid" && pass "--check flags an enrolled uid below min_uid before it bites" || fail "--check min_uid: $OUT"
+sed -i '/^daemon /d' "$R/uidmap"
 touch "$R/disabled"
+OUT=$(python3 "$CREDD" -c "$R/credd.conf" --check --user shuser 2>/dev/null)
+echo "$OUT" | grep -q "FAIL  constrained delegation for shuser: skipped: the kill switch is on" \
+  && pass "--check sends nothing to AD while the kill switch is on" || fail "--check with kill switch: $OUT"
 OUT=$(as shuser python3 "$GET" 2>&1); [ $? -eq 1 ] && echo "$OUT" | grep -q "disabled by the HPC administrators" \
   && pass "kill switch: with $R/disabled present, krb-get is refused at once (no restart)" || fail "kill switch: $OUT"
 N0=$(grep -c "skipping refresh" "$R/daemon.log"); sleep 4

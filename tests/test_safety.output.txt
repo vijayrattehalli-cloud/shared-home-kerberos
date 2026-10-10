@@ -1,10 +1,16 @@
+ok   test_backend_rc4_ticket_warns_but_rc4_session_key_rejects
 ok   test_config_safety_options
+existing cache for uid=5000 failed validation, re-minting: minted cache rejected [bad_ticket]: tickets are for asmith@TEST.LAB, expected jdoe@TEST.LAB or root@TEST.LAB
+ok   test_existing_master_is_validated_once_after_start
 ok   test_kill_switch_min_uid_and_cooldown
 ok   test_krb_get_status_output
+ok   test_min_uid_default_follows_login_defs
+ticket check for jdoe: (ticket_checks=warn, not enforced) tickets are for asmith@TEST.LAB, expected jdoe@TEST.LAB
 ok   test_mint_discards_a_cache_that_fails_validation
 ok   test_parse_and_accept_good_cache
 ok   test_process_hardening
 ok   test_rejects_weak_crypto_and_short_life
 ok   test_rejects_wrong_or_extra_tickets
+ok   test_upn_mapping_accepted_through_the_linux_name
 
-all 8 safety tests passed
+all 12 safety tests passed

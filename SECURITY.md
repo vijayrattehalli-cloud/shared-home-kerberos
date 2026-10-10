@@ -87,22 +87,29 @@ collects users' service tickets.
 with `ERR busy`); `CLIENT_TIMEOUT_S` (10s) caps a slow client; `min_reissue_
 interval` (10s) throttles re-copying into `$HOME` so `krb-get` spam cannot drive
 repeated `setpriv`+write storms. The cheap validity check still runs each call.
-After a failed mint, a user's requests are answered from the cached error for
+After a failure only an admin can fix (not delegable, unknown principal,
+rejected cache), a user's requests are answered from the cached error for
 `failure_cooldown` (60s), so a refused user cannot turn logins or scripts into
-a stream of requests to the domain controller.
+a stream of requests to the domain controller. Transient errors are not cached.
 
 ### 3.5a Unexpected tickets from the KDC
 Every freshly minted cache is inspected before it replaces anything: it must
-name the expected user (case-insensitive), hold exactly one ticket per
-`delegate_targets` entry and nothing else, contain no TGT, use AES for both
-session key and ticket, and have at least 5 minutes of life. Otherwise it is
+name the expected user (the uidmap principal or `<linux name>@REALM`,
+case-insensitive), cover every `delegate_targets` entry, contain no TGT, have
+an AES session key, and have at least 5 minutes of life. Otherwise it is
 discarded (`bad_ticket`) and the previous cache stays. This guards against an
-enterprise-name lookup resolving to a different AD account, an allow-list or
-KDC-policy change, and RC4 fallback.
+enterprise-name lookup resolving to a different AD account and against RC4
+session keys. A back-end ticket encrypted with RC4 (chosen by the target
+service account) and extra non-TGT entries are logged, not refused. With
+`ticket_checks = warn` only the two name-matching checks are relaxed; the TGT,
+client, session-key and lifetime checks always apply. Caches minted before
+start-up (or before a uidmap change) are checked on first use.
 
 ### 3.5b Emergency stop and account scope
 `disable_file` is a kill switch: while it exists nothing is minted or
-installed, effective immediately. `min_uid` (1000) keeps root and system
+installed, effective immediately. Its directory must be root-owned and not
+writable by others, and no ancestor may let others replace it, so only root
+can trip it. `min_uid` (1000) keeps root and system
 accounts out of scope even if enrolled by mistake. Neither revokes tickets
 already issued.
 

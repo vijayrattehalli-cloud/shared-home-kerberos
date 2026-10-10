@@ -152,40 +152,68 @@ def _qualify(principal: str, realm: str) -> str:
     return principal if "@" in principal else f"{principal}@{realm}"
 
 
-def validate_user_cache(info: CacheInfo, expected_principal: str, realm: str,
+def validate_user_cache(info: CacheInfo, accepted_principals: list[str], realm: str,
                         targets: list[str], min_valid_s: int,
-                        now: float | None = None) -> None:
-    """Fail closed unless a freshly minted cache holds exactly what was asked
-    for: tickets for the expected user (compared case-insensitively), one for
-    each delegation target and nothing else, no TGT, AES only, and at
-    least min_valid_s of life left. Raises
-    KrbToolError(category="bad_ticket") naming the first problem found."""
+                        now: float | None = None, strict: bool = True) -> list[str]:
+    """Check a freshly minted cache before anyone uses it.
+
+    Fatal (raises KrbToolError, category "bad_ticket"): no default principal;
+    tickets for someone other than one of `accepted_principals` (compared
+    case-insensitively, bare names qualified with `realm`); a TGT; a delegation
+    target missing; a ticket naming a different client; a non-AES session key;
+    less than `min_valid_s` of life.
+
+    Returned as warnings (the cache is still usable): extra non-TGT entries,
+    and a ticket encrypted with a non-AES key -- that is chosen by the TARGET
+    service account's msDS-SupportedEncryptionTypes, so it is a back-end
+    setting to fix, not a reason to deny every user of that service.
+
+    strict=False (ticket_checks = warn) turns only the two name-matching
+    checks -- an unexpected principal name and a missing target -- into
+    warnings, for sites still sorting out name formats. A TGT, a ticket for a
+    different client, a non-AES session key and too short a life stay fatal."""
     now = time.time() if now is None else now
+    warnings: list[str] = []
 
     def bad(why: str) -> None:
         raise KrbToolError("kvno", "minted cache rejected", why, "bad_ticket")
 
-    want = _qualify(expected_principal, realm)
+    def name_problem(why: str) -> None:
+        if strict:
+            bad(why)
+        warnings.append(f"(ticket_checks=warn, not enforced) {why}")
+
+    ok = {_qualify(p, realm).lower() for p in accepted_principals}
     if not info.default_principal:
         bad("cache has no default principal")
-    if info.default_principal.lower() != want.lower():
-        bad(f"tickets are for {info.default_principal}, expected {want}")
-    servers = [t.server for t in info.tickets]
-    if any(s.lower().startswith("krbtgt/") for s in servers):
+    if info.default_principal.lower() not in ok:
+        name_problem(f"tickets are for {info.default_principal}, expected "
+            f"{' or '.join(sorted({_qualify(p, realm) for p in accepted_principals}))}")
+    servers = {t.server.lower(): t.server for t in info.tickets}
+    if any(s.startswith("krbtgt/") for s in servers):
         bad("cache contains a ticket-granting ticket")
-    if sorted(s.lower() for s in servers) != sorted(t.lower() for t in targets):
-        bad(f"cache holds {', '.join(servers) or 'no tickets'}; expected {', '.join(targets)}")
+    missing = [t for t in targets if t.lower() not in servers]
+    if missing:
+        name_problem(f"no ticket for {', '.join(missing)} (cache holds "
+            f"{', '.join(servers.values()) or 'nothing'})")
+    wanted = {t.lower() for t in targets}
+    extra = [v for k, v in servers.items() if k not in wanted]
+    if extra:
+        warnings.append(f"cache also holds {', '.join(extra)}")
     for t in info.tickets:
-        if t.client and t.client.lower() != want.lower():
+        if t.client and t.client.lower() != info.default_principal.lower():
             bad(f"ticket for {t.server} names client {t.client}")
-        for kind, et in (("session key", t.skey_etype), ("ticket", t.tkt_etype)):
-            if et is None:
-                bad(f"no encryption type reported for {t.server}")
-            if et not in ALLOWED_ENCTYPES:
-                bad(f"{t.server} {kind} uses {et}; only AES is allowed")
+        if t.skey_etype is None:
+            bad(f"no encryption type reported for {t.server}")
+        if t.skey_etype not in ALLOWED_ENCTYPES:
+            bad(f"{t.server} session key uses {t.skey_etype}; only AES is allowed")
+        if t.tkt_etype not in ALLOWED_ENCTYPES:
+            warnings.append(f"{t.server} ticket is encrypted with {t.tkt_etype}: enable "
+                            "AES on that service account (msDS-SupportedEncryptionTypes)")
         if t.expires - now < min_valid_s:
             bad(f"ticket for {t.server} expires in {int(t.expires - now)}s "
                 f"(minimum {min_valid_s}s)")
+    return warnings
 
 
 def parse_mit_version(text: str) -> tuple[int, ...] | None:
