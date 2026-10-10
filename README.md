@@ -184,6 +184,9 @@ revokes a ticket.
 If these are unacceptable, a node-local-KCM design is the alternative; this repo
 is the shared-home design only.
 
+For a comparison with a PKINIT-based alternative that gives users a full TGT
+(CRAFT), see [`docs/craft-vs-krb-credd-comparison.docx`](docs/craft-vs-krb-credd-comparison.docx).
+
 ## Integrations
 
 - **Hive / HDFS** — the job's cache already holds the `hive/_HOST`, `hdfs/_HOST`
