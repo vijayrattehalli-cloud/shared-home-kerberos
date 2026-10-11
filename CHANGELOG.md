@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `docs/krb-credd-call-graph.md` (and an interactive `.html` copy): call-graph
+  diagrams of the whole data flow, with file:line references for every function.
 - `tests/verify-ad.sh`: an acceptance test to run on the broker node against a
   real Active Directory. Non-destructive; checks the broker keytab and TGT, a
   real S4U mint per user with `kvno -U` and `-I` (reporting the exact name AD

@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>krb-credd Call Graph</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column of numbered flow sections, each a diagram plus a short key; function index at the end. */
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --fg: #1b2330; --muted: #5a6577; --rule: #dde2ea;
+  --accent: #1f5fa8; --code-bg: #eef1f6;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12161d; --panel: #1a2029; --fg: #e3e8f0; --muted: #9aa5b6; --rule: #2c3442;
+  --accent: #7fb2ee; --code-bg: #232b37; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12161d; --panel: #1a2029; --fg: #e3e8f0; --muted: #9aa5b6; --rule: #2c3442;
+  --accent: #7fb2ee; --code-bg: #232b37; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 1060px; margin: 0 auto; padding-inline: 20px; padding-block: 36px 64px; }
+h1 { font-size: 1.9rem; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; text-wrap: balance; }
+h2 { font-size: 1.25rem; font-weight: 600; margin: 0; text-wrap: balance; }
+.lede { color: var(--muted); max-width: 68ch; margin: 0; }
+code, .mono { font-family: var(--mono); font-size: 0.88em; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 8px; }
+nav a { font-size: 0.85rem; color: var(--accent); text-decoration: none; border: 1px solid var(--rule); padding: 4px 10px; border-radius: 999px; background: var(--panel); }
+nav a:hover, nav a:focus-visible { border-color: var(--accent); outline: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 18px 0 0; font-size: 0.82rem; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #0003; display: inline-block; }
+section { margin-top: 44px; display: grid; gap: 12px; }
+.head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.step { font-family: var(--mono); font-size: 0.8rem; color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; }
+.src { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); }
+.diagram { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 18px; overflow-x: auto; }
+.diagram pre.mermaid { margin: 0; background: transparent; display: flex; justify-content: center; min-width: min-content; }
+.notes { margin: 0; padding-left: 20px; max-width: 80ch; color: var(--fg); }
+.notes li { margin: 3px 0; }
+.notes li::marker { color: var(--muted); }
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; background: var(--code-bg); }
+td:first-child { font-family: var(--mono); white-space: nowrap; }
+td.ln { font-family: var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+footer { margin-top: 48px; font-size: 0.82rem; color: var(--muted); }
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+  <h1>krb-credd call graph</h1>
+  <p class="lede">Every function call in the krb-credd data flow, version 2.3.0 (main at <code>020dc43</code>). Each diagram follows one path through the code. Labels give <span class="mono">file:line</span> of the function definition; external programs and files on disk are shown where the code reaches them.</p>
+
+  <nav aria-label="Diagrams">
+    <a href="#overview">0 Overview</a>
+    <a href="#client">1 krb-get</a>
+    <a href="#startup">2 Daemon start-up</a>
+    <a href="#request">3 Socket request</a>
+    <a href="#ensure">4 ensure()</a>
+    <a href="#mint">5 Minting</a>
+    <a href="#sequence">6 One GET, end to end</a>
+    <a href="#refresh">7 Background refresh</a>
+    <a href="#check">8 --check</a>
+    <a href="#index">Function index</a>
+  </nav>
+
+  <div class="legend" aria-label="Legend">
+    <span><i class="sw" style="background:#cfe0f7"></i>krb-get (user side)</span>
+    <span><i class="sw" style="background:#d9ecd9"></i>credd.py (daemon)</span>
+    <span><i class="sw" style="background:#f3e3c3"></i>_krb.py (Kerberos helpers)</span>
+    <span><i class="sw" style="background:#f2d0cf"></i>external program</span>
+    <span><i class="sw" style="background:#e4e0f0"></i>file / socket</span>
+    <span><i class="sw" style="background:#ececec"></i>decision</span>
+  </div>
+
+  <!-- 0 -->
+  <section id="overview">
+    <div class="head"><span class="step">0</span><h2>Overview: who calls whom</h2></div>
+    <div class="diagram"><pre class="mermaid">
+flowchart LR
+  classDef cli fill:#cfe0f7,stroke:#4a78b5,color:#111
+  classDef dmn fill:#d9ecd9,stroke:#4c8a4c,color:#111
+  classDef krb fill:#f3e3c3,stroke:#b4873a,color:#111
+  classDef ext fill:#f2d0cf,stroke:#b5524f,color:#111
+  classDef file fill:#e4e0f0,stroke:#6e62a3,color:#111
+
+  shell["login shell<br/>profile.d-krb-hpc.sh"]:::ext --> get["krb-get<br/>get.main"]:::cli
+  prolog["Slurm TaskProlog<br/>taskprolog.krb.sh"]:::ext --> get
+  get -- "GET / STATUS" --> sock[("/run/krb-hpc/credd.sock")]:::file
+  sock --> handler["Handler.handle<br/>credd.py:643"]:::dmn
+  handler --> tm["TicketManager<br/>ensure / status"]:::dmn
+  refresh["refresh thread<br/>refresh_loop :617"]:::dmn --> tm
+  tm --> krb["Krb5 helpers<br/>_krb.py"]:::krb
+  krb --> kinit["kinit"]:::ext
+  krb --> klist["klist"]:::ext
+  krb --> kvno["kvno"]:::ext
+  kinit & kvno --> ad["Active Directory KDC"]:::ext
+  tm --> setpriv["setpriv --reuid=user"]:::ext --> inst["krb-install-ccache<br/>install_ccache.main"]:::cli
+  refresh --> squeue["squeue"]:::ext
+  krb --- bcc[("broker.cc<br/>broker TGT")]:::file
+  tm --- master[("state_dir/uid.cc<br/>master copy")]:::file
+  inst --> home[("~/.krb5cc_hpc<br/>user's cache")]:::file
+</pre></div>
+    <ul class="notes">
+      <li>Two entry points drive all minting: a user's <code>krb-get</code> request, and the daemon's own refresh thread.</li>
+      <li>Only <code>kinit</code> and <code>kvno</code> talk to AD. <code>klist</code> only reads local cache files.</li>
+      <li>The daemon is root; the only code that writes into a home directory runs as the user under <code>setpriv</code>.</li>
+    </ul>
+  </section>
+
+  <!-- 1 -->
+  <section id="client">
+    <div class="head"><span class="step">1</span><h2>krb-get, the client</h2><span class="src">src/krbhpc/get.py</span></div>
+    <div class="diagram"><pre class="mermaid">
+flowchart TD
+  classDef cli fill:#cfe0f7,stroke:#4a78b5,color:#111
+  classDef dec fill:#ececec,stroke:#888,color:#111
+  classDef file fill:#e4e0f0,stroke:#6e62a3,color:#111
+
+  m["main :67<br/>read KRB_HPC_SOCKET, KRB_HPC_TIMEOUT"]:::cli --> a{"argv?"}:::dec
+  a -- "--status" --> st["_status :45"]:::cli
+  a -- "none" --> askg["_ask :22<br/>send 'GET'"]:::cli
+  a -- "other" --> use["print usage, exit 2"]:::cli
+  st --> asks["_ask :22<br/>send 'STATUS'"]:::cli
+  askg & asks --> sock[("AF_UNIX connect<br/>credd.sock")]:::file
+  st --> when["_when :31<br/>format expiry / retry times"]:::cli
+  askg --> r{"reply"}:::dec
+  r -- "OK path" --> out["print export KRB5CCNAME=FILE:path<br/>shell evals it, exit 0"]:::cli
+  r -- "ERR msg" --> err["print msg to stderr, exit 1"]:::cli
+  r -- "socket error" --> e2["exit 2"]:::cli
+</pre></div>
+    <ul class="notes">
+      <li><code>krb-get</code> sends nothing about who the user is. The daemon reads the caller's UID from the socket with <code>SO_PEERCRED</code>.</li>
+      <li>The path is quoted with <code>shlex.quote</code> because the shell evaluates the output.</li>
+    </ul>
+  </section>
+
+  <!-- 2 -->
+  <section id="startup">
+    <div class="head"><span class="step">2</span><h2>Daemon start-up</h2><span class="src">credd.py main :797</span></div>
+    <div class="diagram"><pre class="mermaid">
+flowchart TD
+  classDef dmn fill:#d9ecd9,stroke:#4c8a4c,color:#111
+  classDef krb fill:#f3e3c3,stroke:#b4873a,color:#111
+  classDef ext fill:#f2d0cf,stroke:#b5524f,color:#111
+  classDef dec fill:#ececec,stroke:#888,color:#111
+  classDef file fill:#e4e0f0,stroke:#6e62a3,color:#111
+
+  main["main :797<br/>must be root; umask 077"]:::dmn --> hard["_harden_process :778<br/>RLIMIT_CORE=0, PR_SET_DUMPABLE=0"]:::dmn
+  hard --> c{"--check?"}:::dec
+  c -- yes --> chk["check :696<br/>see diagram 8"]:::dmn
+  c -- no --> load["Config.load :143"]:::dmn
+  load --> as1["_assert_secure :92<br/>config, uidmap root-owned"]:::dmn
+  load --> dur["duration_seconds _krb:28"]:::krb
+  load --> nt["_name_type :238"]:::dmn
+  load --> uidmin["_login_defs_uid_min :224<br/>min_uid default"]:::dmn
+  load --> um["UidMap.__init__ :259"]:::dmn
+  um --> tmi["TicketManager.__init__ :293"]:::dmn
+  tmi --> k5["Krb5.__init__ _krb:286<br/>tool paths, -U or -I"]:::krb
+  tmi --> as2["_assert_secure :92<br/>keytab, state dir, helper, tools"]:::dmn
+  tmi --> seed["_seed_active :340<br/>users with existing masters"]:::dmn
+  tmi --> ver["Krb5.version _krb:319"]:::krb
+  ver --> run1["Krb5.run _krb:311"]:::krb --> kl["klist -V"]:::ext
+  ver --> pmv["parse_mit_version _krb:220<br/>MIT 1.19 or newer"]:::krb
+  ver --> prin["UidMap.principal :265<br/>load map, warn on uid below min_uid"]:::dmn
+  prin --> eb["_ensure_broker :363<br/>get broker TGT now; failure only warns"]:::dmn
+  eb --> srv["Server(credd.sock, Handler)<br/>chmod 0666"]:::dmn
+  srv --> thr["Thread: refresh_loop :617"]:::dmn
+  srv --> sf["serve_forever<br/>one thread per connection"]:::dmn
+  sf --> h["Handler.handle :643"]:::dmn
+</pre></div>
+    <ul class="notes">
+      <li>A bad config, insecure file permissions or a non-MIT <code>klist</code> stop the daemon with one clear line.</li>
+      <li>The broker TGT is fetched at start-up so a bad keytab shows in the log at once. See diagram 5 for what <code>_ensure_broker</code> does.</li>
+    </ul>
+  </section>
+
+  <!-- 3 -->
+  <section id="request">
+    <div class="head"><span class="step">3</span><h2>Handling a socket request</h2><span class="src">credd.py Handler.handle :643</span></div>
+    <div class="diagram"><pre class="mermaid">
+flowchart TD
+  classDef dmn fill:#d9ecd9,stroke:#4c8a4c,color:#111
+  classDef krb fill:#f3e3c3,stroke:#b4873a,color:#111
+  classDef dec fill:#ececec,stroke:#888,color:#111
+
+  h["Handler.handle :643"]:::dmn --> sem{"semaphore<br/>MAX_CLIENTS free?"}:::dec
+  sem -- no --> busy["reply ERR busy"]:::dmn
+  sem -- yes --> peer["getsockopt SO_PEERCRED<br/>→ uid of caller"]:::dmn
+  peer --> rq{"request line"}:::dec
+  rq -- STATUS --> st["status :505<br/>never mints"]:::dmn
+  st --> d1["disabled :448"]:::dmn
+  st --> p1["UidMap.principal :265"]:::dmn
+  st --> m1["master :356"]:::dmn
+  st --> ce1["Krb5.cache_expiry _krb:363"]:::krb
+  st --> okst["reply OK enrolled=… expires=… retry_at=… last_error=…"]:::dmn
+  rq -- GET --> due["due_for_install :442<br/>min_reissue throttle"]:::dmn
+  due --> ens["ensure :452<br/>see diagram 4"]:::dmn
+  ens --> touch["touch :524<br/>mark user active"]:::dmn
+  touch --> ok["reply OK /home/user/.krb5cc_hpc"]:::dmn
+  rq -- other --> bad["ValueError"]:::dmn
+  ens -. PermissionError .-> e1["reply ERR reason<br/>disabled, system uid, not enrolled"]:::dmn
+  ens -. KrbToolError .-> e2["reply ERR USER_MESSAGES category"]:::dmn
+  bad -.-> e3["reply ERR could not obtain ticket"]:::dmn
+</pre></div>
+  </section>
+
+  <!-- 4 -->
+  <section id="ensure">
+    <div class="head"><span class="step">4</span><h2>ensure(): decide whether to mint and install</h2><span class="src">credd.py :452</span></div>
+    <div class="diagram"><pre class="mermaid">
+flowchart TD
+  classDef dmn fill:#d9ecd9,stroke:#4c8a4c,color:#111
+  classDef krb fill:#f3e3c3,stroke:#b4873a,color:#111
+  classDef dec fill:#ececec,stroke:#888,color:#111
+  classDef ext fill:#f2d0cf,stroke:#b5524f,color:#111
+
+  e["ensure(uid) :452"]:::dmn --> ks{"disabled :448<br/>kill-switch file exists?"}:::dec
+  ks -- yes --> pe1["PermissionError"]:::dmn
+  ks -- no --> mu{"uid below min_uid?"}:::dec
+  mu -- yes --> pe2["PermissionError"]:::dmn
+  mu -- no --> pr{"UidMap.principal :265<br/>enrolled?"}:::dec
+  pr -- no --> pe3["PermissionError"]:::dmn
+  pr -- yes --> lk["per-uid lock<br/>master :356"]:::dmn
+  lk --> ce["Krb5.cache_expiry _krb:363"]:::krb
+  ce --> kc["_klist_cached _krb:332<br/>stat(); klist only if file changed"]:::krb
+  kc --> ee["earliest_expiry _krb:71<br/>→ _parse_klist_time :42"]:::krb
+  ee --> need{"missing, or expires<br/>within renew_margin?"}:::dec
+  need -- no --> fc{"first use of this master<br/>since start-up?"}:::dec
+  fc -- yes --> val["_validate :385<br/>see diagram 5"]:::dmn
+  val -- fails --> cd
+  val -- passes --> inst
+  fc -- no --> inst
+  need -- yes --> cd{"failure within<br/>failure_cooldown (60 s)?"}:::dec
+  cd -- yes --> again["re-raise last error<br/>from_cooldown=True, no AD request"]:::dmn
+  cd -- no --> mint["_mint :402<br/>see diagram 5"]:::dmn
+  mint -. "KrbToolError in<br/>COOLDOWN_CATEGORIES" .-> rec["remember in _last_error"]:::dmn
+  mint --> inst{"changed, forced,<br/>or _missing :629 home cache?"}:::dec
+  inst -- yes --> ins["_install :426"]:::dmn
+  ins --> sp["setpriv --reuid --regid<br/>--inh-caps=-all --no-new-privs"]:::ext
+  sp --> ic["install_ccache.main :22<br/>runs AS THE USER"]:::ext
+  ic --> wr["mkstemp, write, fsync,<br/>chmod 600, os.replace"]:::ext
+  inst -- no --> done
+  wr --> done["_clear_failure :538<br/>return home cache path"]:::dmn
+  hc["home_ccache :359"]:::dmn -.-> inst
+</pre></div>
+    <ul class="notes">
+      <li>The cooldown applies only to errors an administrator must fix: <code>not_delegable</code>, <code>unknown_principal</code>, <code>bad_ticket</code>. Timeouts and KDC outages retry at once.</li>
+      <li>The master copy in <code>state_dir</code> is the source of truth. The home copy is reinstalled when it changes, when <code>due_for_install</code> says so, or when the user deleted it.</li>
+    </ul>
+  </section>
+
+  <!-- 5 -->
+  <section id="mint">
+    <div class="head"><span class="step">5</span><h2>Minting: broker TGT, S4U, validation</h2><span class="src">credd.py _mint :402 · _krb.py</span></div>
+    <div class="diagram"><pre class="mermaid">
+flowchart TD
+  classDef dmn fill:#d9ecd9,stroke:#4c8a4c,color:#111
+  classDef krb fill:#f3e3c3,stroke:#b4873a,color:#111
+  classDef dec fill:#ececec,stroke:#888,color:#111
+  classDef ext fill:#f2d0cf,stroke:#b5524f,color:#111
+  classDef file fill:#e4e0f0,stroke:#6e62a3,color:#111
+
+  mint["_mint(principal, cc, user) :402"]:::dmn --> eb["_ensure_broker :363<br/>broker lock"]:::dmn
+
+  subgraph B["Broker TGT"]
+    eb --> kt["Krb5.klist_times _krb:359<br/>→ _klist_cached → parse_klist :54"]:::krb
+    kt --> g{"1 h or more left?"}:::dec
+    g -- yes --> keep["keep it"]:::dmn
+    g -- no --> rn{"renewable past<br/>renew_margin?"}:::dec
+    rn -- yes --> kr["kinit_renew _krb:384<br/>copy → kinit -R → os.replace"]:::krb
+    kr -- failed --> kk
+    rn -- no --> kk["kinit_keytab _krb:376<br/>kinit -f -r -l -k -t keytab<br/>into broker.new → os.replace"]:::krb
+  end
+
+  keep & kr & kk --> s4u["Krb5.s4u_mint _krb:406"]:::krb
+
+  subgraph S["Constrained delegation"]
+    s4u --> cp["copy broker.cc → throwaway .broker.*.cc"]:::file
+    cp --> kv["Krb5.run → kvno -c copy --out-cache cc.new<br/>-U|-I user -P spn1 spn2 …"]:::ext
+    kv --> ad["AD: per target<br/>S4U2Self then S4U2Proxy"]:::ext
+    kv -. "non-zero exit" .-> kte["KrbToolError → classify_error :250"]:::krb
+  end
+
+  kv --> chm["chmod 600 cc.new"]:::dmn --> val["_validate :385"]:::dmn
+
+  subgraph V["Validation (v2.3.0)"]
+    val --> ins["Krb5.inspect _krb:367<br/>klist -e -f -c cc.new"]:::krb
+    ins --> pkd["parse_klist_details _krb:113<br/>→ _parse_klist_time :42"]:::krb
+    pkd --> vuc["validate_user_cache _krb:156<br/>→ _qualify :152"]:::krb
+    vuc --> rules{"right client? no TGT? every target?<br/>AES session key? 300 s or more?"}:::dec
+  end
+
+  rules -- "fatal problem" --> fail["KrbToolError bad_ticket<br/>delete cc.new, old cache stays"]:::dmn
+  rules -- "warnings only" --> log["log each warning once a day"]:::dmn
+  log --> rep["os.replace cc.new → master cc"]:::file
+  rep --> lm["warn once if lifetime below renew_margin"]:::dmn
+</pre></div>
+    <ul class="notes">
+      <li>The S4U2Self and S4U2Proxy requests happen inside one <code>kvno</code> process, one target after another. The throwaway copy exists because <code>kvno</code> also stores the S4U2Proxy tickets in its input cache.</li>
+      <li><code>ticket_checks = warn</code> turns only the user-name checks into warnings. The TGT, target, AES and lifetime checks stay fatal.</li>
+    </ul>
+  </section>
+
+  <!-- 6 -->
+  <section id="sequence">
+    <div class="head"><span class="step">6</span><h2>One GET, end to end (first login, nothing cached)</h2></div>
+    <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant Sh as login shell
+  participant G as krb-get
+  participant H as Handler.handle
+  participant T as TicketManager
+  participant K as Krb5 (_krb.py)
+  participant X as kinit / kvno / klist
+  participant AD as AD KDC
+  participant I as setpriv + install helper
+
+  Sh->>G: eval "$(krb-get)"
+  G->>H: connect credd.sock, "GET"
+  H->>H: SO_PEERCRED → uid
+  H->>T: due_for_install(uid), ensure(uid)
+  T->>T: disabled(), min_uid, UidMap.principal()
+  T->>K: cache_expiry(master)
+  K-->>T: None (no master yet)
+  T->>T: _mint()
+  T->>T: _ensure_broker()
+  T->>K: klist_times(broker.cc)
+  alt broker TGT stale
+    K->>X: kinit -R on a copy, or kinit -k -t keytab
+    X->>AD: AS-REQ / TGS renew
+    AD-->>X: broker TGT
+  end
+  T->>K: s4u_mint(broker.cc, user, targets, cc.new)
+  K->>X: kvno -c copy --out-cache cc.new -U user -P targets
+  loop each target SPN
+    X->>AD: S4U2Self (ticket for user to broker)
+    AD-->>X: forwardable ticket
+    X->>AD: S4U2Proxy (user to target, checked against msDS-AllowedToDelegateTo)
+    AD-->>X: service ticket for target
+  end
+  X-->>K: exit 0
+  T->>K: inspect(cc.new)
+  K->>X: klist -e -f
+  K->>K: parse_klist_details()
+  T->>K: validate_user_cache()
+  T->>T: os.replace(cc.new, master)
+  T->>I: _install(): setpriv --reuid=user krb-install-ccache ~/.krb5cc_hpc
+  I-->>T: exit 0 (atomic write as the user)
+  T-->>H: home cache path
+  H->>T: touch(uid)
+  H-->>G: "OK /home/user/.krb5cc_hpc"
+  G-->>Sh: export KRB5CCNAME=FILE:/home/user/.krb5cc_hpc
+</pre></div>
+  </section>
+
+  <!-- 7 -->
+  <section id="refresh">
+    <div class="head"><span class="step">7</span><h2>Background refresh thread</h2><span class="src">credd.py :554–627</span></div>
+    <div class="diagram"><pre class="mermaid">
+flowchart TD
+  classDef dmn fill:#d9ecd9,stroke:#4c8a4c,color:#111
+  classDef krb fill:#f3e3c3,stroke:#b4873a,color:#111
+  classDef dec fill:#ececec,stroke:#888,color:#111
+  classDef ext fill:#f2d0cf,stroke:#b5524f,color:#111
+
+  loop["refresh_loop :617<br/>ThreadPoolExecutor(refresh_workers)"]:::dmn --> pass["refresh_pass :579"]:::dmn
+  pass --> idle["users idle past active_window"]:::dmn
+  idle --> ret["delete master :356, Krb5.forget _krb:353,<br/>_clear_failure :538, drop locks and state"]:::dmn
+  pass --> ws{"watch_slurm?"}:::dec
+  ws -- yes --> su["_slurm_uids :566"]:::dmn --> sq["squeue -h -a -t PD,CF,R,CG -o %U"]:::ext
+  ws -- no --> filt
+  su --> filt["keep uid at or above min_uid<br/>and _enrolled :547 → UidMap.principal"]:::dmn
+  filt --> dis{"disabled :448?"}:::dec
+  dis -- yes --> skip1["log and skip pass"]:::dmn
+  dis -- no --> eb["_ensure_broker :363<br/>once per pass"]:::dmn
+  eb -. fails .-> skip2["log once, skip pass"]:::dmn
+  eb --> map["pool.map(_refresh_one, uids)"]:::dmn
+  map --> one["_refresh_one :554"]:::dmn
+  one --> bo{"_backing_off :542?"}:::dec
+  bo -- yes --> nop["skip this user"]:::dmn
+  bo -- no --> ens["ensure(uid) :452<br/>diagram 4"]:::dmn
+  ens -. "error, not from_cooldown" .-> rf["_record_failure :529<br/>exponential backoff"]:::dmn
+  ens -. "from_cooldown" .-> nop2["ignore: no new attempt was made"]:::dmn
+  map --> wait["stop.wait(refresh_interval)"]:::dmn --> pass
+</pre></div>
+    <ul class="notes">
+      <li>A user is refreshed while they have used <code>krb-get</code> recently, or (with <code>watch_slurm</code>) while they have a pending or running job.</li>
+      <li>Each user's mint and install is serialized by the per-uid lock taken in <code>ensure</code>, so a request and a refresh never mint the same user twice at once.</li>
+    </ul>
+  </section>
+
+  <!-- 8 -->
+  <section id="check">
+    <div class="head"><span class="step">8</span><h2>krb-credd --check [--user NAME]</h2><span class="src">credd.py check :696</span></div>
+    <div class="diagram"><pre class="mermaid">
+flowchart TD
+  classDef dmn fill:#d9ecd9,stroke:#4c8a4c,color:#111
+  classDef krb fill:#f3e3c3,stroke:#b4873a,color:#111
+  classDef dec fill:#ececec,stroke:#888,color:#111
+  classDef ext fill:#f2d0cf,stroke:#b5524f,color:#111
+
+  c["check :696<br/>each step prints PASS or FAIL"]:::dmn --> s1["1 config: Config.load :143"]:::dmn
+  s1 --> s2["2 trusted files: TicketManager :293 + UidMap :259"]:::dmn
+  s2 --> s3["3 MIT version: Krb5.version _krb:319"]:::krb
+  s3 --> s4["4 kill switch: disabled :448"]:::dmn
+  s4 --> s5["5 uid map: UidMap.principal :265, min_uid"]:::dmn
+  s5 --> s6["6 broker TGT: _ensure_broker :363 + klist_times _krb:359"]:::dmn
+  s6 --> ws{"watch_slurm?"}:::dec
+  ws -- yes --> s7["7 squeue -h -o %U"]:::ext
+  ws -- no --> u
+  s7 --> u{"--user given and broker OK?"}:::dec
+  u -- "kill switch on" --> sk["FAIL: skipped, nothing sent to AD"]:::dmn
+  u -- yes --> s8["8 delegation: getpwnam, principal,<br/>_mint :402 into state_dir/.check.uid.cc"]:::dmn
+  s8 --> s8b["cache_expiry _krb:363, then delete the file<br/>and Krb5.forget"]:::krb
+  u -- no --> end1["exit 0 if all passed, else 1"]:::dmn
+  s8b --> end1
+  sk --> end1
+</pre></div>
+    <ul class="notes">
+      <li><code>--check --user</code> runs the full mint and validation from diagram 5 but never installs anything into a home directory.</li>
+    </ul>
+  </section>
+
+  <!-- index -->
+  <section id="index">
+    <div class="head"><span class="step">Index</span><h2>Every function on these diagrams</h2></div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Function</th><th>File</th><th>Line</th><th>Calls</th></tr></thead>
+      <tbody>
+        <tr><td>main</td><td>get.py</td><td class="ln">67</td><td>_status, _ask</td></tr>
+        <tr><td>_status</td><td>get.py</td><td class="ln">45</td><td>_ask, _when</td></tr>
+        <tr><td>_ask</td><td>get.py</td><td class="ln">22</td><td>socket connect / send / readline</td></tr>
+        <tr><td>_when</td><td>get.py</td><td class="ln">31</td><td>time formatting</td></tr>
+        <tr><td>main</td><td>credd.py</td><td class="ln">797</td><td>_harden_process, check, Config.load, UidMap, TicketManager, Krb5.version, UidMap.principal, _ensure_broker, Server, refresh_loop thread</td></tr>
+        <tr><td>_harden_process</td><td>credd.py</td><td class="ln">778</td><td>setrlimit, prctl</td></tr>
+        <tr><td>_assert_secure</td><td>credd.py</td><td class="ln">92</td><td>os.stat</td></tr>
+        <tr><td>Config.load</td><td>credd.py</td><td class="ln">143</td><td>_assert_secure, duration_seconds, _name_type, _login_defs_uid_min</td></tr>
+        <tr><td>_login_defs_uid_min</td><td>credd.py</td><td class="ln">224</td><td>reads /etc/login.defs</td></tr>
+        <tr><td>_name_type</td><td>credd.py</td><td class="ln">238</td><td></td></tr>
+        <tr><td>UidMap.__init__ / principal</td><td>credd.py</td><td class="ln">259 / 265</td><td>reads uidmap.conf</td></tr>
+        <tr><td>TicketManager.__init__</td><td>credd.py</td><td class="ln">293</td><td>Krb5, _assert_secure, _seed_active</td></tr>
+        <tr><td>_seed_active</td><td>credd.py</td><td class="ln">340</td><td>lists state_dir</td></tr>
+        <tr><td>master / home_ccache</td><td>credd.py</td><td class="ln">356 / 359</td><td>path helpers</td></tr>
+        <tr><td>_ensure_broker</td><td>credd.py</td><td class="ln">363</td><td>klist_times, kinit_renew, kinit_keytab, os.replace</td></tr>
+        <tr><td>_validate</td><td>credd.py</td><td class="ln">385</td><td>Krb5.inspect, validate_user_cache</td></tr>
+        <tr><td>_mint</td><td>credd.py</td><td class="ln">402</td><td>_ensure_broker, s4u_mint, _validate, os.replace</td></tr>
+        <tr><td>_install</td><td>credd.py</td><td class="ln">426</td><td>home_ccache, setpriv → install_ccache.main</td></tr>
+        <tr><td>due_for_install</td><td>credd.py</td><td class="ln">442</td><td></td></tr>
+        <tr><td>disabled</td><td>credd.py</td><td class="ln">448</td><td>disable_file.exists()</td></tr>
+        <tr><td>ensure</td><td>credd.py</td><td class="ln">452</td><td>disabled, UidMap.principal, master, cache_expiry, _validate, _mint, home_ccache, _missing, _install, _clear_failure</td></tr>
+        <tr><td>status</td><td>credd.py</td><td class="ln">505</td><td>disabled, UidMap.principal, master, cache_expiry</td></tr>
+        <tr><td>touch</td><td>credd.py</td><td class="ln">524</td><td></td></tr>
+        <tr><td>_record_failure / _clear_failure / _backing_off</td><td>credd.py</td><td class="ln">529 / 538 / 542</td><td>backoff bookkeeping</td></tr>
+        <tr><td>_enrolled</td><td>credd.py</td><td class="ln">547</td><td>UidMap.principal</td></tr>
+        <tr><td>_refresh_one</td><td>credd.py</td><td class="ln">554</td><td>_backing_off, ensure, _record_failure</td></tr>
+        <tr><td>_slurm_uids</td><td>credd.py</td><td class="ln">566</td><td>squeue</td></tr>
+        <tr><td>refresh_pass</td><td>credd.py</td><td class="ln">579</td><td>master, Krb5.forget, _clear_failure, _slurm_uids, _enrolled, disabled, _ensure_broker, _refresh_one</td></tr>
+        <tr><td>refresh_loop</td><td>credd.py</td><td class="ln">617</td><td>refresh_pass</td></tr>
+        <tr><td>_missing</td><td>credd.py</td><td class="ln">629</td><td>os.stat</td></tr>
+        <tr><td>Handler.handle</td><td>credd.py</td><td class="ln">643</td><td>status, due_for_install, ensure, touch</td></tr>
+        <tr><td>check</td><td>credd.py</td><td class="ln">696</td><td>Config.load, TicketManager, UidMap, version, disabled, principal, _ensure_broker, klist_times, squeue, _mint, cache_expiry, forget</td></tr>
+        <tr><td>duration_seconds</td><td>_krb.py</td><td class="ln">28</td><td></td></tr>
+        <tr><td>_parse_klist_time</td><td>_krb.py</td><td class="ln">42</td><td></td></tr>
+        <tr><td>parse_klist</td><td>_krb.py</td><td class="ln">54</td><td>_parse_klist_time</td></tr>
+        <tr><td>earliest_expiry</td><td>_krb.py</td><td class="ln">71</td><td>_parse_klist_time</td></tr>
+        <tr><td>parse_klist_details</td><td>_krb.py</td><td class="ln">113</td><td>_parse_klist_time</td></tr>
+        <tr><td>_qualify</td><td>_krb.py</td><td class="ln">152</td><td></td></tr>
+        <tr><td>validate_user_cache</td><td>_krb.py</td><td class="ln">156</td><td>_qualify</td></tr>
+        <tr><td>parse_mit_version</td><td>_krb.py</td><td class="ln">220</td><td></td></tr>
+        <tr><td>classify_error / KrbToolError</td><td>_krb.py</td><td class="ln">250 / 262</td><td>maps kvno/kinit stderr to a category</td></tr>
+        <tr><td>Krb5.run</td><td>_krb.py</td><td class="ln">311</td><td>subprocess.run (kinit, klist, kvno)</td></tr>
+        <tr><td>Krb5.version</td><td>_krb.py</td><td class="ln">319</td><td>run (klist -V), parse_mit_version</td></tr>
+        <tr><td>Krb5._klist_cached</td><td>_krb.py</td><td class="ln">332</td><td>os.stat, run (klist)</td></tr>
+        <tr><td>Krb5.forget</td><td>_krb.py</td><td class="ln">353</td><td></td></tr>
+        <tr><td>Krb5.klist_times</td><td>_krb.py</td><td class="ln">359</td><td>_klist_cached + parse_klist</td></tr>
+        <tr><td>Krb5.cache_expiry</td><td>_krb.py</td><td class="ln">363</td><td>_klist_cached + earliest_expiry</td></tr>
+        <tr><td>Krb5.inspect</td><td>_krb.py</td><td class="ln">367</td><td>run (klist -e -f), parse_klist_details</td></tr>
+        <tr><td>Krb5.kinit_keytab</td><td>_krb.py</td><td class="ln">376</td><td>run (kinit -k -t)</td></tr>
+        <tr><td>Krb5.kinit_renew</td><td>_krb.py</td><td class="ln">384</td><td>copyfile, run (kinit -R), os.replace</td></tr>
+        <tr><td>Krb5.s4u_mint</td><td>_krb.py</td><td class="ln">406</td><td>copy broker cache, run (kvno -U|-I -P)</td></tr>
+        <tr><td>main</td><td>install_ccache.py</td><td class="ln">22</td><td>mkstemp, write, fsync, chmod, os.replace</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <footer>Generated from an AST walk of <span class="mono">src/krbhpc/credd.py</span>, <span class="mono">_krb.py</span>, <span class="mono">get.py</span> and <span class="mono">install_ccache.py</span> at version 2.3.0. Line numbers point at each function's <span class="mono">def</span>.</footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose",
+    theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default" });
+</script>
+</body>
+</html>

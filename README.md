@@ -187,6 +187,11 @@ is the shared-home design only.
 For a comparison with a PKINIT-based alternative that gives users a full TGT
 (CRAFT), see [`docs/craft-vs-krb-credd-comparison.docx`](docs/craft-vs-krb-credd-comparison.docx).
 
+Diagrams of every function call in the daemon and client (start-up, `krb-get`
+requests, minting and validation, install, background refresh, `--check`) are in
+[`docs/krb-credd-call-graph.md`](docs/krb-credd-call-graph.md), with an
+interactive copy in `docs/krb-credd-call-graph.html`.
+
 ## Integrations
 
 - **Hive / HDFS** — the job's cache already holds the `hive/_HOST`, `hdfs/_HOST`
