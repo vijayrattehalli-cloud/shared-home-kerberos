@@ -189,6 +189,8 @@ For a comparison with a PKINIT-based alternative that gives users a full TGT
 Step-by-step data flow diagrams for CRAFT modes 1 to 3 and krb-credd, written for a general technical reader, are in
 [`docs/craft-vs-krb-credd-data-flow-diagrams.docx`](docs/craft-vs-krb-credd-data-flow-diagrams.docx)
 (one-page overview: [`docs/craft-vs-krb-credd-overview.png`](docs/craft-vs-krb-credd-overview.png)).
+An implementation-cost and cyber-security-risk comparison, with a hostile-critic
+review, is in [`docs/craft-vs-krb-credd-cost-risk.md`](docs/craft-vs-krb-credd-cost-risk.md).
 
 Diagrams of every function call in the daemon and client (start-up, `krb-get`
 requests, minting and validation, install, background refresh, `--check`) are in

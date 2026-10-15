@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `docs/craft-vs-krb-credd-cost-risk.md`: CRAFT vs krb-credd compared on
+  implementation cost and cyber security risk, with a hostile-critic (Potato)
+  assessment: three failure modes, two unproven assumptions, one counter-argument.
 - `docs/krb-credd-call-graph.md` (and an interactive `.html` copy): call-graph
   diagrams of the whole data flow, with file:line references for every function.
 - `tests/verify-ad.sh`: an acceptance test to run on the broker node against a
