@@ -5,7 +5,7 @@
 # The production design: one BROKER service account authenticates from a single
 # keytab and uses Kerberos constrained delegation (S4U2Self + S4U2Proxy) to mint
 # each enrolled user's SERVICE tickets, which are written into the user's home
-# on the shared filesystem and seen by every compute node. krb-credd does the
+# on the shared filesystem and seen by every compute node. orthrus does the
 # Kerberos work by running the MIT tools (kinit, klist, kvno) by absolute path.
 #
 # This script runs the REAL daemon against a throwaway MIT KDC that stands in
@@ -52,7 +52,7 @@ KDB_TEST_MODULE_DIR=${KDB_TEST_MODULE_DIR:-}
 [ "$(id -u)" = 0 ] || { echo "run as root (needs setpriv/runuser/useradd)"; exit 1; }
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-CREDD="$REPO/bin/krb-credd"; GET="$REPO/bin/krb-get"; HELPER="$REPO/bin/krb-install-ccache"
+CREDD="$REPO/bin/orthrus"; GET="$REPO/bin/krb-get"; HELPER="$REPO/bin/krb-install-ccache"
 pass(){ echo "PASS  $*"; }; fail(){ echo "FAIL  $*"; [ -f "$R/daemon.log" ] && { echo "--- daemon.log"; tail -20 "$R/daemon.log"; }; exit 1; }
 
 REALM=ENT.TEST; P=$(( (RANDOM%2000)+27000 )); H=$(hostname | tr 'A-Z' 'a-z')
@@ -181,7 +181,7 @@ EOC
 chmod 644 "$R/credd.conf"; }
 start_daemon(){
   # A hostile environment: none of these may reach the Kerberos tools.
-  # Run with ONLY the capabilities systemd/krb-credd.service grants.
+  # Run with ONLY the capabilities systemd/orthrus.service grants.
   setpriv --bounding-set=-all,+setuid,+setgid,+setpcap,+dac_read_search --inh-caps=-all \
     env KRB5CCNAME="FILE:$R/evil.cc" KRB5_KTNAME="FILE:$R/evil.kt" KRB5_TRACE="$R/evil.trace" \
       KRB5_CONFIG="$R/evil.conf" LC_ALL=de_DE.UTF-8 TZ=Asia/Tokyo \
@@ -342,7 +342,7 @@ N0=$(grep -c "skipping refresh" "$R/daemon.log"); sleep 4
 rm -f "$R/disabled"
 OUT=$(as shuser python3 "$GET") && [ "$OUT" = "export KRB5CCNAME=FILE:$CC" ] && pass "removing the kill switch resumes service" || fail "after kill switch: $OUT"
 
-echo "--- Section 5: krb-credd --check (admin validation) ---"
+echo "--- Section 5: orthrus --check (admin validation) ---"
 MARGIN=1h write_conf
 OUT=$(python3 "$CREDD" -c "$R/credd.conf" --check --user shuser 2>/dev/null); RC=$?
 [ $RC -eq 0 ] && echo "$OUT" | grep -q "PASS  constrained delegation for shuser: .*validated" && echo "$OUT" | grep -q "PASS  kill switch" && echo "$OUT" | grep -q "all checks passed" \

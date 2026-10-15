@@ -2,7 +2,7 @@
 """
 krb-install-ccache DEST
 
-Invoked by krb-credd through `setpriv --reuid=<user>`, so it runs WITH THE
+Invoked by orthrus through `setpriv --reuid=<user>`, so it runs WITH THE
 USER'S identity. It therefore works on root-squashed NFS/GPFS/Lustre homes and
 can never write anywhere the user could not. Reads a ccache on stdin and
 installs it atomically at DEST (parent dir mode 0700, file mode 0600).

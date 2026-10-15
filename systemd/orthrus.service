@@ -1,10 +1,10 @@
 [Unit]
-Description=krb-credd -- Kerberos client broker (root) for HPC (shared-home, S4U client of AD)
+Description=orthrus -- Kerberos client broker (root) for HPC (shared-home, S4U client of AD)
 After=network-online.target remote-fs.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/krb-credd -c /etc/krb-hpc/credd.conf
+ExecStart=/usr/local/bin/orthrus -c /etc/krb-hpc/credd.conf
 Restart=on-failure
 RestartSec=5
 User=root
@@ -16,7 +16,7 @@ StateDirectory=krb-hpc
 
 # --- sandboxing (tuned so setpriv can drop to the user and kinit can reach AD) ---
 ProtectSystem=strict
-# krb-credd writes tickets into users' home dirs via the setpriv child, so the
+# orthrus writes tickets into users' home dirs via the setpriv child, so the
 # home root must be writable here. If homes live elsewhere (e.g. /gpfs/home),
 # add that path -- otherwise every install fails with "Read-only file system".
 ReadWritePaths=/var/lib/krb-hpc /run/krb-hpc /home
@@ -48,7 +48,7 @@ SystemCallErrorNumber=EPERM
 # relocate them, and keep them root:0600 (the daemon enforces this at startup).
 
 # Validate a deployment before enabling the unit:
-#   krb-credd --check [--user <name>]
+#   orthrus --check [--user <name>]
 
 [Install]
 WantedBy=multi-user.target

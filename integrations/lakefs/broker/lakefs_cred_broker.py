@@ -2,7 +2,7 @@
 """lakeFS credential broker.
 
 Bridges a Kerberos identity to a SHORT-LIVED lakeFS access key so a Slurm/Spark
-job (which holds only a krb-credd-minted service ticket) can reach lakeFS
+job (which holds only a orthrus-minted service ticket) can reach lakeFS
 Enterprise over S3A.
 
 Trust model

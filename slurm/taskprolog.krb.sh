@@ -1,6 +1,6 @@
 #!/bin/bash
 # Slurm TaskProlog (runs as the job user on every node, before every task).
-# The service tickets are in the user's shared home; krb-credd keeps them fresh
+# The service tickets are in the user's shared home; orthrus keeps them fresh
 # while the job is pending/running. "Forwarding" is just pointing each task at it.
 # HOME can be unset (e.g. sbatch --export=NONE), so fall back to the passwd entry.
 home=${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}

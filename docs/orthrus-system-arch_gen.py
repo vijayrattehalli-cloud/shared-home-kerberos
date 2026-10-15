@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Canonical end-to-end system architecture for the krb-credd solution.
+"""Canonical end-to-end system architecture for the orthrus solution.
 
-krb-credd -- a Kerberos client broker (root) -- authenticates to Active Directory
+orthrus -- a Kerberos client broker (root) -- authenticates to Active Directory
 with one broker keytab, mints each user's SERVICE tickets by S4U constrained
 delegation, installs them (as the user) into shared-home, and the Slurm
 TaskProlog makes them visible on every compute node. AD is the single KDC.
 
-Renders docs/krb-credd-system-architecture.{svg,png,pdf}.
+Renders docs/orthrus-system-architecture.{svg,png,pdf}.
 """
 import matplotlib
 matplotlib.use("Agg")
@@ -46,7 +46,7 @@ def cnum(x, y, n, c=INK, rad=15):
 
 
 # ---------- title ----------
-text(W/2, 1014, "krb-credd — Kerberos Client Broker (root): System Architecture",
+text(W/2, 1014, "orthrus — Kerberos Client Broker (root): System Architecture",
      size=21, w="bold", ha="center")
 text(W/2, 986, "One broker keytab → S4U service tickets from Active Directory → installed as the user into shared-home → visible on every Slurm compute node",
      size=12, c=SUB, ha="center")
@@ -55,7 +55,7 @@ text(W/2, 986, "One broker keytab → S4U service tickets from Active Directory 
 box(430, 852, 620, 112, fc=WIN_FILL, ec=WIN, lw=2.2, r=0.04)
 text(740, 944, "Active Directory — KDC  (Windows; single realm)", size=13.5, w="bold", c=WIN, ha="center")
 text(740, 916, "issues every ticket  •  authorizes constrained delegation via msDS-AllowedToDelegateTo\n"
-               "native S4U (MS-SFU) + PAC (KB5008380)  —  krb-credd holds NO KDC key material",
+               "native S4U (MS-SFU) + PAC (KB5008380)  —  orthrus holds NO KDC key material",
      size=10.6, c=INK, ha="center", ls=1.5)
 
 # ---------- user + CAC (top-left) ----------
@@ -70,9 +70,9 @@ text(60, ROW_Y+ROW_H-22, "Login node", size=12.6, w="bold")
 text(60, ROW_Y+ROW_H-52, "•  CAC-gated OS login\n•  users known by UID/GID\n"
      "•  knows no Kerberos\n•  profile.d runs krb-get", size=10.8, ls=1.6)
 
-# krb-credd (focal)
+# orthrus (focal)
 box(350, ROW_Y-10, 380, ROW_H+20, fc="#FFF8EE", ec=ACCENT, lw=2.6)
-text(540, ROW_Y+ROW_H-2, "krb-credd — Kerberos client broker (root)", size=12.6, w="bold", c=ACCENT, ha="center")
+text(540, ROW_Y+ROW_H-2, "orthrus — Kerberos client broker (root)", size=12.6, w="bold", c=ACCENT, ha="center")
 text(368, ROW_Y+ROW_H-36, "•  front door: UNIX socket, SO_PEERCRED\n"
      "•  broker TGT: kinit -k (ONE keytab, renewable)\n"
      "•  mint: S4U2Self + S4U2Proxy (kvno -U -P)\n"
@@ -102,13 +102,13 @@ text(1360, ROW_Y+ROW_H-82, "Hive / HDFS\n(AD realm)\n\n•  accept hive/_HOST\n 
 my = ROW_Y + ROW_H/2
 arrow((165, 790), (165, ROW_Y+ROW_H), c=SUB, lw=1.8); cnum(165, 778, "1", SUB, 13)
 arrow((290, my), (350, my), c=LNX); cnum(320, my+30, "2", LNX)
-# krb-credd -> AD KDC (two up arrows)
+# orthrus -> AD KDC (two up arrows)
 arrow((480, ROW_Y+ROW_H+10), (480, 852), c=WIN); cnum(480, 822, "3", WIN)
 arrow((600, ROW_Y+ROW_H+10), (600, 852), c=WIN); cnum(600, 822, "4", WIN)
 arrow((730, my), (790, my), c=ACCENT); cnum(760, my+30, "5", ACCENT)
 arrow((1030, my), (1090, my), c=LNX); cnum(1060, my+30, "6", LNX)
 arrow((1320, my), (1340, my), c=LNX); cnum(1330, my+34, "7", LNX)
-# refresh self-loop on krb-credd
+# refresh self-loop on orthrus
 arrow((372, ROW_Y+40), (372, ROW_Y-2), c=ACCENT, lw=1.8, style="-|>", rad=-0.9)
 cnum(348, ROW_Y+18, "↻", ACCENT, 13)
 
@@ -117,12 +117,12 @@ box(40, 70, 1530, 300, fc="#FBFCFE", ec="#D7DEE7", lw=1.4, r=0.02)
 text(60, 356, "End-to-end flow", size=12.5, w="bold", c=INK)
 steps_l = [
   ("1", SUB, "CAC / PuTTY / SSH login establishes the user’s UID/GID on the login node (no Kerberos on the HPC side)."),
-  ("2", LNX, "profile.d runs krb-get → krb-credd over a UNIX socket; the UID comes from SO_PEERCRED (kernel-verified, never the request)."),
-  ("3", WIN, "krb-credd keeps its broker TGT fresh: kinit -k from ONE keytab (renewable, unattended) — obtained from AD."),
-  ("4", WIN, "krb-credd mints the user’s SERVICE tickets: S4U2Self + S4U2Proxy (kvno -U user -P spns); AD authorizes via msDS-AllowedToDelegateTo."),
+  ("2", LNX, "profile.d runs krb-get → orthrus over a UNIX socket; the UID comes from SO_PEERCRED (kernel-verified, never the request)."),
+  ("3", WIN, "orthrus keeps its broker TGT fresh: kinit -k from ONE keytab (renewable, unattended) — obtained from AD."),
+  ("4", WIN, "orthrus mints the user’s SERVICE tickets: S4U2Self + S4U2Proxy (kvno -U user -P spns); AD authorizes via msDS-AllowedToDelegateTo."),
 ]
 steps_r = [
-  ("5", ACCENT, "krb-credd installs the cache AS THE USER (setpriv, atomic, 0700/0600) into $HOME/.krb5/krb5cc_hpc on shared storage."),
+  ("5", ACCENT, "orthrus installs the cache AS THE USER (setpriv, atomic, 0700/0600) into $HOME/.krb5/krb5cc_hpc on shared storage."),
   ("6", LNX, "Every compute node mounts the same home; the Slurm TaskProlog points KRB5CCNAME at the cache — no copy, no node daemon."),
   ("7", LNX, "The job uses the hive/_HOST (etc.) service ticket over GSSAPI; the backend verifies it and checks the PAC (Ranger)."),
   ("↻", ACCENT, "The squeue-watch refresh loop RE-MINTS service tickets before expiry, so long or queued jobs never find them stale."),
@@ -139,5 +139,5 @@ keycol2(80, steps_l, 92)
 keycol2(820, steps_r, 92)
 
 for ext in ("svg", "png", "pdf"):
-    fig.savefig(f"docs/krb-credd-system-architecture.{ext}", facecolor="white", pad_inches=0)
-print("wrote docs/krb-credd-system-architecture.{svg,png,pdf}")
+    fig.savefig(f"docs/orthrus-system-architecture.{ext}", facecolor="white", pad_inches=0)
+print("wrote docs/orthrus-system-architecture.{svg,png,pdf}")

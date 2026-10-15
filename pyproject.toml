@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "krbhpc-shared-home"
 version = "2.3.0"
-description = "krb-credd: a Kerberos client broker (root) for a CAC / UID-GID HPC cluster -- S4U constrained-delegation client of Active Directory, shared-home ticket delivery (pure Python)"
+description = "orthrus: a Kerberos client broker (root) for a CAC / UID-GID HPC cluster -- S4U constrained-delegation client of Active Directory, shared-home ticket delivery (pure Python)"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
@@ -17,7 +17,7 @@ hive = ["impyla[kerberos]>=0.18"]      # only for the Python Hive client
 dev  = ["pytest>=7"]
 
 [project.scripts]
-krb-credd = "krbhpc.credd:main"
+orthrus = "krbhpc.credd:main"
 krb-get = "krbhpc.get:main"
 krb-install-ccache = "krbhpc.install_ccache:main"
 

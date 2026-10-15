@@ -1,10 +1,10 @@
-# krb-credd call graph
+# orthrus call graph
 
-Every function call in the krb-credd data flow (version 2.3.0). Each diagram follows one path through the code; labels give `file:line` of the function definition (credd.py unless another file is named). An interactive version with the same diagrams is in [`krb-credd-call-graph.html`](krb-credd-call-graph.html).
+Every function call in the orthrus data flow (version 2.3.0). Each diagram follows one path through the code; labels give `file:line` of the function definition (credd.py unless another file is named). An interactive version with the same diagrams is in [`orthrus-call-graph.html`](orthrus-call-graph.html).
 
 **Colour key:** blue = krb-get (user side) · green = credd.py (daemon) · amber = _krb.py (Kerberos helpers) · red = external program · purple = file / socket · grey = decision.
 
-Contents: [Overview: who calls whom](#overview) · [krb-get, the client](#client) · [Daemon start-up](#startup) · [Handling a socket request](#request) · [ensure(): decide whether to mint and install](#ensure) · [Minting: broker TGT, S4U, validation](#mint) · [One GET, end to end (first login, nothing cached)](#sequence) · [Background refresh thread](#refresh) · [krb-credd --check [--user NAME]](#check)
+Contents: [Overview: who calls whom](#overview) · [krb-get, the client](#client) · [Daemon start-up](#startup) · [Handling a socket request](#request) · [ensure(): decide whether to mint and install](#ensure) · [Minting: broker TGT, S4U, validation](#mint) · [One GET, end to end (first login, nothing cached)](#sequence) · [Background refresh thread](#refresh) · [orthrus --check [--user NAME]](#check)
 
 <a id="overview"></a>
 
@@ -334,7 +334,7 @@ flowchart TD
 
 <a id="check"></a>
 
-## 8. krb-credd --check [--user NAME]
+## 8. orthrus --check [--user NAME]
 
 *credd.py check :696*
 

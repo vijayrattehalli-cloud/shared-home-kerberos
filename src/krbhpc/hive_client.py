@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Hive access in pure Python over Kerberos, using the SERVICE ticket that
-krb-credd minted (by constrained delegation) into the shared home
+orthrus minted (by constrained delegation) into the shared home
 ($KRB5CCNAME -> FILE:$HOME/.krb5/krb5cc_hpc).
 
 The cache holds the hive/_HOST service ticket directly (no TGT); GSSAPI uses the
@@ -39,7 +39,7 @@ def connect(host: str, port: int, service: str, database: str = "default"):
     cc = os.environ.get("KRB5CCNAME", "")
     if cc.startswith(("KEYRING:", "KCM:", "API:", "DIR:")):
         # Not fatal for Python GSSAPI the way it is for Java, but FILE: is what
-        # krb-credd writes and what the whole design standardizes on.
+        # orthrus writes and what the whole design standardizes on.
         print(f"warning: KRB5CCNAME={cc} is not a FILE cache", file=sys.stderr)
     try:
         from impala.dbapi import connect as impala_connect  # type: ignore

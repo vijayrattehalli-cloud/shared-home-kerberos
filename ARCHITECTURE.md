@@ -42,7 +42,7 @@ Two independent decisions define the architecture.
 ### 2.1 Issuance: one broker account + constrained delegation (not per-user keytabs)
 
 Because the CAC cannot obtain a TGT on the HPC and forwarding is blocked, a
-privileged daemon — **`krb-credd`, a Kerberos client broker (root)** —
+privileged daemon — **`orthrus`, a Kerberos client broker (root)** —
 authenticates to AD and obtains each user's credentials on their behalf. The naïve way to do that is an escrowed **per-user
 keytab** — but a keytab is a long-term, exportable, copyable key, which is
 exactly the property CAC/PIV exists to eliminate, and it means **N standing
@@ -68,13 +68,13 @@ Kerberos to backends, and it collapses N keytabs into **one** broker credential
 scoped — by AD's `msDS-AllowedToDelegateTo` — to exactly the enumerated service
 SPNs and nothing else.
 
-> **`krb-credd` is an MIT krb5 *client* of AD — it runs no KDC or realm of its
+> **`orthrus` is an MIT krb5 *client* of AD — it runs no KDC or realm of its
 > own.** On the Linux host it uses the MIT client stack (`kinit`/`klist`/`kvno`,
 > `libkrb5`/GSSAPI) with a client-side `krb5.conf`, the broker keytab, and a
 > credential cache. All tickets are issued and all delegation is authorized by
 > **Active Directory**, which is the single KDC for the realm. The broker does
 > not sit adjacent to a KDC and holds no KDC key material. The cross-boundary
-> topology is drawn in [`docs/krb-credd-architecture.svg`](docs/krb-credd-architecture.svg)
+> topology is drawn in [`docs/orthrus-architecture.svg`](docs/orthrus-architecture.svg)
 > (PNG/PDF alongside): the broker in the Linux boundary, AD's KDC in the Windows
 > boundary, and the S4U exchanges (TCP 88) across the realm edge.
 
@@ -105,7 +105,7 @@ domain compromise), so `sybild`'s forge-based impersonation is impossible there.
 This is drawn, with the source citations, in
 [`docs/sybil-ad-incompatibility.svg`](docs/sybil-ad-incompatibility.svg).
 
-**What `krb-credd` does instead.** It targets an existing **AD** realm as a plain
+**What `orthrus` does instead.** It targets an existing **AD** realm as a plain
 Kerberos **S4U client** — it holds a service keytab and calls S4U2Self/S4U2Proxy
 over the wire; **AD** issues every ticket and authorizes delegation via
 `msDS-AllowedToDelegateTo`. No KDB access, no key reading, no co-location. Same
@@ -146,7 +146,7 @@ maximum simplicity — and its defining trade-off (§8).
 ```
  login/broker tier                         shared filesystem            compute fabric
  ┌─────────────────────────┐               ┌───────────────────┐        ┌──────────────┐
- │ krb-credd (root, Python)│── writes as ─▶ │ $HOME/.krb5/      │ ◀─mnt─ │ cn001..cnNNN │
+ │ orthrus (root, Python)│── writes as ─▶ │ $HOME/.krb5/      │ ◀─mnt─ │ cn001..cnNNN │
  │  ├ broker TGT (1 keytab)│   the user     │   krb5cc_hpc      │        │ TaskProlog   │
  │  ├ UidMap (uidmap)      │   (setpriv)    │  (0700 dir,       │        │  sets        │
  │  ├ TicketManager        │                │   0600 file)      │        │  KRB5CCNAME  │
@@ -162,13 +162,13 @@ maximum simplicity — and its defining trade-off (§8).
 
 | Component | Runs as | Responsibility |
 |---|---|---|
-| `krb-credd` (`src/krbhpc/credd.py`) | root, on login/broker nodes | keep the broker TGT fresh; mint, re-mint, and install each user's service tickets |
+| `orthrus` (`src/krbhpc/credd.py`) | root, on login/broker nodes | keep the broker TGT fresh; mint, re-mint, and install each user's service tickets |
 | `krb-get` (`src/krbhpc/get.py`) | the user | ask the daemon (over its UNIX socket) to refresh now; print the `KRB5CCNAME` export |
 | `krb-install-ccache` (`bin/`) | **the user** (via `setpriv`) | atomically write the ticket bytes into `$HOME` with correct ownership/mode |
 | `TaskProlog` (`slurm/`) | the user, per task | export `KRB5CCNAME` pointing at the home cache |
 | Hive client (`src/krbhpc/hive_client.py`) | the user, in the job | authenticate to Hive from the FILE ccache via Python GSSAPI (impyla) |
 
-### 3.1 `krb-credd` internals (by module)
+### 3.1 `orthrus` internals (by module)
 
 - **`credd.py`** — process entry point and request handling. A
   `socketserver.ThreadingMixIn` UNIX-domain server reads the peer's
@@ -231,7 +231,7 @@ maximum simplicity — and its defining trade-off (§8).
   home cache the user deleted is put back on the next pass (detected with the
   read-only `CAP_DAC_READ_SEARCH`; on a root-squashed home it can't be seen, so
   it returns at the next mint).
-- **Admin check** — `krb-credd --check [--user NAME]` validates the config
+- **Admin check** — `orthrus --check [--user NAME]` validates the config
   (required options, typos), trusted files and tools, the MIT version, the
   uid map, the kill switch, the broker TGT, `squeue`, and optionally a real,
   validated S4U mint for one user — without starting the daemon or touching
@@ -242,7 +242,7 @@ maximum simplicity — and its defining trade-off (§8).
 
 ### 3.2 Freshness: why tickets never expire mid-job
 
-`krb-credd` keeps tickets fresh for any user who is **active**, defined as:
+`orthrus` keeps tickets fresh for any user who is **active**, defined as:
 (1) they ran `krb-get` within `active_window`, **or** (2) they have a pending or
 running Slurm job (the daemon runs `squeue` each refresh cycle). Service tickets
 cannot be renewed, so the daemon **re-mints** them (a fresh S4U call) within
@@ -259,7 +259,7 @@ runs for days, therefore still finds valid tickets in `$HOME`.
 ```
 user ── CAC ──▶ sshd/PAM (login01)         [OS login; UID established]
   login shell sources /etc/profile.d/krb-hpc.sh
-    └▶ krb-get ──unix socket(GET)──▶ krb-credd
+    └▶ krb-get ──unix socket(GET)──▶ orthrus
                                       UidMap.principal(uid) → jdoe
                                       TicketManager.ensure():
                                         _ensure_broker(): broker TGT fresh (kinit -k / -R)
@@ -273,7 +273,7 @@ user ── CAC ──▶ sshd/PAM (login01)         [OS login; UID established]
 
 ```
 sbatch job.sh
-  (krb-credd already keeps the in-home cache fresh because squeue shows the job)
+  (orthrus already keeps the in-home cache fresh because squeue shows the job)
   for each allocated node cn001..cnNNN:
     slurmd starts the task as the user
       TaskProlog: test -s $HOME/.krb5/krb5cc_hpc → echo export KRB5CCNAME=FILE:$HOME/.krb5/krb5cc_hpc
@@ -287,10 +287,10 @@ No step copies or forwards the ticket; every node reads the same file.
 A common misconception: the job does **not** obtain a TGT. There is no `kinit`,
 no PKINIT, and no Kerberos initial authentication inside the job — and in this
 design there is **no user TGT at all**. The job *inherits* a cache of **service
-tickets** that `krb-credd` minted earlier, out-of-band, by constrained
+tickets** that `orthrus` minted earlier, out-of-band, by constrained
 delegation.
 
-**Who obtains them, and how.** `krb-credd` (root, login/broker tier) keeps one
+**Who obtains them, and how.** `orthrus` (root, login/broker tier) keeps one
 broker TGT alive from one keytab, and mints each user's service tickets with
 S4U — this is the only place credentials are produced:
 
@@ -313,7 +313,7 @@ into the user's shared home as the user (`setpriv` → `krb-install-ccache`):
 whether or not the user is at a shell:
 
 1. **Interactive login** — `/etc/profile.d/krb-hpc.sh` runs `krb-get`.
-2. **The daemon's Slurm watch** — each refresh cycle `krb-credd` runs
+2. **The daemon's Slurm watch** — each refresh cycle `orthrus` runs
    `squeue -h -a -t PD,CF,R,CG -o %U` (`TicketManager._slurm_uids`) and calls
    `ensure(uid)` for **every user with a pending/configuring/running/completing
    job**, minting for anyone whose cache is missing or near expiry.
@@ -337,7 +337,7 @@ service tickets already in the cache (GSSAPI reads `KRB5CCNAME` and finds the
 `hive/_HOST@REALM` ticket without needing a TGT).
 
 > In one line: the job's credentials are minted before and outside the job by
-> `krb-credd`'s constrained-delegation `kvno` — on one broker TGT, triggered by
+> `orthrus`'s constrained-delegation `kvno` — on one broker TGT, triggered by
 > login or by the job appearing in `squeue` — deposited in shared home, and
 > merely pointed-to by the TaskProlog. The job performs no Kerberos
 > authentication itself and never holds a TGT.
@@ -398,7 +398,7 @@ accepted by a real service over GSSAPI, and by `klist`/`kvno`.*
 | `config/krb5.conf` | single AD realm, AES-only enctypes, `udp_preference_limit=1` (TCP for PAC-laden tickets), `default_ccache_name=FILE:`, `auth_to_local = DEFAULT` (real user names) |
 | `config/uidmap.conf` | `<username|uid>  <real AD user principal>`; root-owned, 0644 |
 | `config/profile.d-krb-hpc.sh` | runs `krb-get` at login |
-| `systemd/krb-credd.service` | runs `krb-credd`, sandboxed; `ReadWritePaths` includes the home roots; capped `CapabilityBoundingSet` (see [`SECURITY.md`](SECURITY.md) §4) |
+| `systemd/orthrus.service` | runs `orthrus`, sandboxed; `ReadWritePaths` includes the home roots; capped `CapabilityBoundingSet` (see [`SECURITY.md`](SECURITY.md) §4) |
 
 ---
 

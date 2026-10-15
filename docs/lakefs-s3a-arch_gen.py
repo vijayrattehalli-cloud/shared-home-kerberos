@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Architecture: Slurm/Spark job authenticating to lakeFS Enterprise over S3A,
-with credentials bridged from krb-credd's Kerberos ticket.
+with credentials bridged from orthrus's Kerberos ticket.
 
-krb-credd pre-mints a service ticket for the broker SPN (HTTP/lakefs-sts) into
+orthrus pre-mints a service ticket for the broker SPN (HTTP/lakefs-sts) into
 shared-home; a Spark S3A credentials provider SPNEGOs to a lakeFS credential
 broker, which mints a SHORT-LIVED lakeFS access key via the lakeFS Enterprise
 Auth API; the executor then uses that key (SigV4) against the lakeFS S3 gateway.
@@ -48,22 +48,22 @@ def cnum(x, y, n, c=INK, rad=14):
 
 
 # ---------- title ----------
-text(W/2, 975, "Slurm / Spark \u2192 lakeFS Enterprise over S3A, with krb-credd-bridged credentials",
+text(W/2, 975, "Slurm / Spark \u2192 lakeFS Enterprise over S3A, with orthrus-bridged credentials",
      size=19, w="bold", ha="center")
-text(W/2, 948, "krb-credd gives the job a Kerberos ticket; a credential broker trades it (SPNEGO) for a SHORT-LIVED lakeFS access key that S3A uses (SigV4)",
+text(W/2, 948, "orthrus gives the job a Kerberos ticket; a credential broker trades it (SPNEGO) for a SHORT-LIVED lakeFS access key that S3A uses (SigV4)",
      size=11.3, c=SUB, ha="center")
 
 # ---------- AD KDC (top) ----------
 box(470, 846, 560, 86, fc=WIN_FILL, ec=WIN, lw=2.0, r=0.05)
 text(750, 916, "Active Directory \u2014 KDC", size=12.5, w="bold", c=WIN, ha="center")
-text(750, 892, "krb-credd pre-minted the HTTP/lakefs-sts service ticket via S4U\n(SPN must be in delegate_targets + msDS-AllowedToDelegateTo)",
+text(750, 892, "orthrus pre-minted the HTTP/lakefs-sts service ticket via S4U\n(SPN must be in delegate_targets + msDS-AllowedToDelegateTo)",
      size=10, c=INK, ha="center", ls=1.5)
 
 ROW_Y, ROW_H = 430, 330
 
-# ---------- krb-credd + shared-home (left) ----------
+# ---------- orthrus + shared-home (left) ----------
 box(40, ROW_Y, 250, ROW_H, fc=LNX_FILL, ec=LNX, lw=1.8)
-text(60, ROW_Y+ROW_H-22, "krb-credd (existing)", size=12, w="bold")
+text(60, ROW_Y+ROW_H-22, "orthrus (existing)", size=12, w="bold")
 text(60, ROW_Y+ROW_H-50, "mints the HTTP/lakefs-sts\nSERVICE ticket into\nshared-home", size=10.6, ls=1.5)
 box(58, ROW_Y+24, 214, 96, fc="white", ec="#8aa0b5", lw=1.3, r=0.05)
 text(70, ROW_Y+104, "$HOME/.krb5/krb5cc_hpc", size=10, w="bold")
@@ -102,21 +102,21 @@ text(1162, ROW_Y+56, "Object store (S3 / GCS / Azure / MinIO)", size=10, c=INK)
 
 # ---------- arrows + numbered flow ----------
 my = ROW_Y + ROW_H/2
-arrow((290, my+70), (350, my+70), c=LNX); cnum(320, my+100, "1", LNX)   # krb-credd -> executor (ticket in shared home)
+arrow((290, my+70), (350, my+70), c=LNX); cnum(320, my+100, "1", LNX)   # orthrus -> executor (ticket in shared home)
 arrow((710, my+40), (770, my+40), c=ACCENT); cnum(740, my+72, "3", ACCENT)   # executor -> broker SPNEGO
 arrow((770, my-40), (710, my-40), c=LAKE, rad=0.0); cnum(740, my-72, "5", LAKE)   # broker -> executor key
 arrow((1070, my+30), (1130, my+30), c=LAKE); cnum(1100, my+60, "4", LAKE)   # broker -> lakeFS Auth API
 # executor S3A -> gateway: route BELOW the broker box
 arrow((706, ROW_Y+36), (1130, ROW_Y+150), c=ACCENT, lw=2.4, rad=-0.28); cnum(905, ROW_Y+6, "6", ACCENT)
-# krb-credd up to AD KDC (already-minted, dashed)
+# orthrus up to AD KDC (already-minted, dashed)
 arrow((165, ROW_Y+ROW_H), (470, 852), c=WIN, lw=1.5, ls=(0, (5, 4)), rad=0.12); cnum(300, 812, "0", WIN, 12)
 
 # ---------- flow key ----------
 box(40, 70, 1520, 300, fc="#FBFCFE", ec="#D7DEE7", lw=1.4, r=0.02)
 text(60, 356, "Flow", size=12.5, w="bold", c=INK)
 steps = [
-  ("0", WIN, "(prereq) the broker SPN HTTP/lakefs-sts is in krb-credd's delegate_targets and the broker's msDS-AllowedToDelegateTo."),
-  ("1", LNX, "krb-credd mints that service ticket into $HOME/.krb5/krb5cc_hpc on every node (no TGT \u2014 only pre-minted service tickets)."),
+  ("0", WIN, "(prereq) the broker SPN HTTP/lakefs-sts is in orthrus's delegate_targets and the broker's msDS-AllowedToDelegateTo."),
+  ("1", LNX, "orthrus mints that service ticket into $HOME/.krb5/krb5cc_hpc on every node (no TGT \u2014 only pre-minted service tickets)."),
   ("2", ACCENT, "The Spark executor (running as the user) reads KRB5CCNAME; its S3A credentials provider finds the HTTP/lakefs-sts ticket."),
   ("3", ACCENT, "The provider calls the credential broker over SPNEGO (Authorization: Negotiate) \u2014 targeting exactly that SPN (no TGT to fetch another)."),
   ("4", LAKE, "The broker verifies the Kerberos identity, maps it to a lakeFS user, and mints a SHORT-LIVED lakeFS access key via the Auth API / STS."),

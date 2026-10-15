@@ -31,7 +31,7 @@
 <text x="407.0" y="585" text-anchor="middle" fill="#2E5984" font-size="10.5" font-weight="700">HPC · OURS</text>
 <g filter="url(#sh)"><rect x="560" y="454" width="214" height="158" rx="12" fill="#EAF1F8" stroke="#1F3A5F" stroke-width="2"/></g>
 <text x="667.0" y="484" text-anchor="middle" fill="#1F3A5F" font-size="17" font-weight="700">Credential Broker</text>
-<text x="667.0" y="505" text-anchor="middle" fill="#1F3A5F" font-size="17" font-weight="700">(krb-credd)</text>
+<text x="667.0" y="505" text-anchor="middle" fill="#1F3A5F" font-size="17" font-weight="700">(orthrus)</text>
 <text x="667.0" y="527" text-anchor="middle" fill="#5B6B7B" font-size="12.5">Obtains the user’s access</text>
 <text x="667.0" y="543" text-anchor="middle" fill="#5B6B7B" font-size="12.5">pass from AD on their</text>
 <text x="667.0" y="559" text-anchor="middle" fill="#5B6B7B" font-size="12.5">behalf; keeps it current</text>
