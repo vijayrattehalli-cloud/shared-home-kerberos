@@ -2,10 +2,19 @@
 
 ## Unreleased
 
-- `docs/craft-vs-krb-credd-cost-risk.md`: CRAFT vs krb-credd compared on
+- **Renamed `krb-credd` to `orthrus`.** The daemon, its console script
+  (`orthrus`), wrapper (`bin/orthrus`), systemd unit (`orthrus.service`) and
+  docs now use the new name; diagram and doc files named `krb-credd-*` are now
+  `orthrus-*`. Unchanged on purpose, so existing deployments keep working: the
+  Python module `krbhpc.credd`, the config file `/etc/krb-hpc/credd.conf`, and
+  the `/etc/krb-hpc/`, `/var/lib/krb-hpc/` and `/run/krb-hpc/` paths. To
+  upgrade a host, stop and disable `krb-credd.service`, install, then enable
+  `orthrus.service`.
+  Earlier entries below keep the old name.
+- `docs/craft-vs-orthrus-cost-risk.md`: CRAFT vs orthrus compared on
   implementation cost and cyber security risk, with a hostile-critic (Potato)
   assessment: three failure modes, two unproven assumptions, one counter-argument.
-- `docs/krb-credd-call-graph.md` (and an interactive `.html` copy): call-graph
+- `docs/orthrus-call-graph.md` (and an interactive `.html` copy): call-graph
   diagrams of the whole data flow, with file:line references for every function.
 - `tests/verify-ad.sh`: an acceptance test to run on the broker node against a
   real Active Directory. Non-destructive; checks the broker keytab and TGT, a

@@ -99,11 +99,11 @@ text(MID, 452, "AD will never export it\n→ sybild cannot operate against AD", 
 
 # ---------- pivot: what works ----------
 box(70, 120, 1420, 150, fc="#EAF6EE", ec=OK, lw=2.0, r=0.03)
-text(90, 250, "What actually works against AD  →  krb-credd", size=13.5, w="bold", c=OK)
+text(90, 250, "What actually works against AD  →  orthrus", size=13.5, w="bold", c=OK)
 text(90, 218,
-     "krb-credd is a Kerberos S4U *client* of AD: it holds a sybil-style SERVICE keytab and calls S4U2Self / S4U2Proxy over the wire — AD\n"
+     "orthrus is a Kerberos S4U *client* of AD: it holds a sybil-style SERVICE keytab and calls S4U2Self / S4U2Proxy over the wire — AD\n"
      "issues every ticket and authorizes delegation via msDS-AllowedToDelegateTo. No KDB access, no key reading, no co-location with the KDC.\n"
-     "Same goal as Sybil (impersonate batch users), DIFFERENT and AD-supported mechanism (constrained delegation, not forging).  See docs/krb-credd-architecture.",
+     "Same goal as Sybil (impersonate batch users), DIFFERENT and AD-supported mechanism (constrained delegation, not forging).  See docs/orthrus-architecture.",
      size=11, c=INK, ls=1.6)
 
 # ---------- footer / citation ----------

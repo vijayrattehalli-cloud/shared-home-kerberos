@@ -13,7 +13,7 @@ Verified against the project's own docs (github.com/NVIDIA/sybil):
 
 So the correct picture is a SINGLE MIT-LDAP / FreeIPA realm (all Linux) with the
 Sybil daemon co-located at the KDC -- there is no Windows/AD boundary. For the
-AD-targeted S4U *client* adaptation in this repo, see krb-credd-architecture.*.
+AD-targeted S4U *client* adaptation in this repo, see orthrus-architecture.*.
 
 Renders docs/sybil-reference-architecture.{svg,png,pdf}.
 """
@@ -55,7 +55,7 @@ text(W/2, 978, "NVIDIA Sybil — Reference Architecture  (as the project documen
      size=20, w="bold", ha="center")
 text(W/2, 949, "sybild runs ALONGSIDE the KDC and impersonates users by FORGING TGTs (reads keys from the KDC DB via kadm5)  •  MIT (LDAP backend) or FreeIPA / IdM",
      size=11, c=SUB, ha="center")
-text(W/2, 929, "one Linux Kerberos realm — NOT Active Directory (AD is not in Sybil's supported environment; for the AD client adaptation see krb-credd-architecture)",
+text(W/2, 929, "one Linux Kerberos realm — NOT Active Directory (AD is not in Sybil's supported environment; for the AD client adaptation see orthrus-architecture)",
      size=9.5, c=SUB, ha="center", style="italic")
 
 # ---------- single realm (all Linux) ----------

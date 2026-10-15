@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-krb-credd -- Kerberos client broker (root) for a CAC / UID-GID HPC cluster
+orthrus -- Kerberos client broker (root) for a CAC / UID-GID HPC cluster
 (shared-home design, pure Python).
 
 It is a Kerberos CLIENT of Active Directory -- it runs no KDC or realm of its
@@ -65,7 +65,7 @@ from pathlib import Path
 from ._krb import (DEFAULT_TOOLS, MIN_TICKET_VALID_S, Krb5, KrbToolError,
                    duration_seconds, validate_user_cache)
 
-log = logging.getLogger("krb-credd")
+log = logging.getLogger("orthrus")
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 
 # Hard caps to bound local denial-of-service on the UNIX socket.
@@ -451,7 +451,7 @@ class TicketManager:
 
     def ensure(self, uid: int, force_install: bool = False) -> Path:
         if self.disabled():
-            raise PermissionError("krb-credd is disabled by the HPC administrators")
+            raise PermissionError("orthrus is disabled by the HPC administrators")
         if uid < self.cfg.min_uid:
             raise PermissionError(f"uid {uid} is a system account (below min_uid "
                                   f"{self.cfg.min_uid}) and is never served")
@@ -694,7 +694,7 @@ class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 
 
 def check(cfg_path: str, user: str | None) -> int:
-    """`krb-credd --check [--user NAME]`: validate a deployment without
+    """`orthrus --check [--user NAME]`: validate a deployment without
     starting the daemon or touching anyone's home directory. Each step prints
     PASS/FAIL with the reason; exit status 1 if anything failed."""
     failed = 0
@@ -795,7 +795,7 @@ def _harden_process() -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(prog="krb-credd")
+    ap = argparse.ArgumentParser(prog="orthrus")
     ap.add_argument("-c", "--config", default="/etc/krb-hpc/credd.conf")
     ap.add_argument("--check", action="store_true",
                     help="validate the configuration, tools, keytab and broker TGT, then exit")
@@ -805,7 +805,7 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     if os.geteuid() != 0:
-        raise SystemExit("krb-credd must run as root")
+        raise SystemExit("orthrus must run as root")
     os.umask(0o077)
     _harden_process()
     if args.check:
@@ -819,7 +819,7 @@ def main(argv: list[str] | None = None) -> None:
         # 1.19, which lacks `kvno --out-cache`).
         version = tm.krb.version()
     except (OSError, ValueError, RuntimeError, KeyError) as e:
-        raise SystemExit(f"krb-credd: {e}")
+        raise SystemExit(f"orthrus: {e}")
     try:
         tm.map.principal(-1)
         low = sorted(u for u in tm.map._map if u < cfg.min_uid)

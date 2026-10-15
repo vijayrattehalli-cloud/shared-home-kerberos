@@ -1,6 +1,6 @@
-# Security model — shared-home krb-credd (constrained delegation)
+# Security model — shared-home orthrus (constrained delegation)
 
-This document states what `krb-credd` is trusted to do, what it defends against,
+This document states what `orthrus` is trusted to do, what it defends against,
 what it explicitly does **not**, and the concrete hardening in the code, the
 systemd unit, and Active Directory. Read it alongside
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`AD-SETUP.md`](AD-SETUP.md).
@@ -9,7 +9,7 @@ systemd unit, and Active Directory. Read it alongside
 
 ## 1. What the daemon is
 
-`krb-credd` is a small root daemon on the HPC login/management plane. It holds
+`orthrus` is a small root daemon on the HPC login/management plane. It holds
 **one** credential — a single broker service account's keytab — keeps that
 broker's TGT fresh, and uses **Kerberos constrained delegation (S4U2Self +
 S4U2Proxy)** to mint each enrolled user's **service tickets** to the allow-listed

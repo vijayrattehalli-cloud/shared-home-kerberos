@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Generate the krb-credd cross-boundary architecture diagram.
+"""Generate the orthrus cross-boundary architecture diagram.
 
-krb-credd (the Linux-side credential broker daemon) is an MIT krb5 CLIENT of
+orthrus (the Linux-side credential broker daemon) is an MIT krb5 CLIENT of
 Active Directory -- it has NO KDC or realm of its own. It sits in the HPC/Linux
 trust boundary and talks Kerberos across the realm edge to the AD KDC in the
 Windows boundary, minting per-user service tickets by constrained delegation
-(S4U2Self + S4U2Proxy). Renders docs/krb-credd-architecture.{svg,png,pdf}.
+(S4U2Self + S4U2Proxy). Renders docs/orthrus-architecture.{svg,png,pdf}.
 
 (The box was previously labeled "Sybil". It is relabeled here because it runs in
 S4U client mode against AD -- not Sybil's native KDC-adjacent design, which
@@ -49,7 +49,7 @@ def arrow(p0, p1, *, c=INK, lw=2.0, style="-|>", rad=0.0, z=4, ls="-"):
 
 
 # ---------- title ----------
-text(W/2, 977, "krb-credd Credential Broker — Linux Kerberos CLIENT ↔ Active Directory KDC",
+text(W/2, 977, "orthrus Credential Broker — Linux Kerberos CLIENT ↔ Active Directory KDC",
      size=20, w="bold", ha="center")
 text(W/2, 948, "The broker is an MIT krb5 CLIENT of AD (no KDC of its own); it mints per-user service tickets by constrained delegation (S4U) across the realm edge",
      size=11.5, c=SUB, ha="center")
@@ -101,7 +101,7 @@ text(950, 846, "•  CAC-gated OS login (UID / GID only)\n"
                "•  the node itself knows no Kerberos", size=11)
 
 box(930, 452, 570, 300, fc="#FFF8EE", ec=ACCENT, lw=2.6)
-text(950, 738, "krb-credd — Kerberos client broker  (root)", size=13.5, w="bold", c=ACCENT)
+text(950, 738, "orthrus — Kerberos client broker  (root)", size=13.5, w="bold", c=ACCENT)
 text(950, 706, "•  MIT krb5 CLIENT of AD — NO KDC / realm of its own\n"
                "      (libkrb5 / GSSAPI • broker keytab • krb5.conf • ccache)\n"
                "•  holds ONE broker keytab  (gMSA / HSM-backable)\n"
@@ -168,8 +168,8 @@ for col, st, lab in [
         ("#9AA7B5", (0, (3, 3)), "validation")]:
     ax.add_line(Line2D([x, x+38], [ly, ly], color=col, lw=2.4, ls=st, zorder=6))
     text(x+46, ly, lab, size=10.3, va="center"); x += 46 + len(lab)*6.9 + 34
-text(x, ly, "Focal node: krb-credd (amber)", size=10.3, c=ACCENT, w="bold", va="center")
+text(x, ly, "Focal node: orthrus (amber)", size=10.3, c=ACCENT, w="bold", va="center")
 
 for ext in ("svg", "png", "pdf"):
-    fig.savefig(f"docs/krb-credd-architecture.{ext}", facecolor="white", pad_inches=0)
-print("wrote docs/krb-credd-architecture.{svg,png,pdf}")
+    fig.savefig(f"docs/orthrus-architecture.{ext}", facecolor="white", pad_inches=0)
+print("wrote docs/orthrus-architecture.{svg,png,pdf}")

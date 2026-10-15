@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-krb-get -- ask krb-credd to (re)install your service tickets in ~/.krb5 and print
+krb-get -- ask orthrus to (re)install your service tickets in ~/.krb5 and print
 the export. (You get service tickets for the allow-listed backends, not a TGT.)
 
     eval "$(krb-get)"      # sets KRB5CCNAME=FILE:$HOME/.krb5/krb5cc_hpc
@@ -46,7 +46,7 @@ def _status(path: str, timeout: float) -> int:
     try:
         resp = _ask(path, timeout, b"STATUS\n")
     except OSError as e:
-        print(f"krb-get: cannot reach krb-credd at {path}: {e}", file=sys.stderr)
+        print(f"krb-get: cannot reach orthrus at {path}: {e}", file=sys.stderr)
         return 2
     if not resp.startswith("OK "):
         print(f"krb-get: {resp.removeprefix('ERR ').strip() or 'no answer'}", file=sys.stderr)
@@ -79,13 +79,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         resp = _ask(path, timeout, b"GET\n")
     except OSError as e:          # includes socket.timeout
-        print(f"krb-get: cannot reach krb-credd at {path}: {e}", file=sys.stderr)
+        print(f"krb-get: cannot reach orthrus at {path}: {e}", file=sys.stderr)
         return 2
     if resp.startswith("OK "):
         # The output is eval'd by the caller's shell: quote the value.
         print("export KRB5CCNAME=" + shlex.quote(f"FILE:{resp[3:]}"))
         return 0
-    print(f"krb-get: {resp.removeprefix('ERR ').strip() or 'no answer from krb-credd'}",
+    print(f"krb-get: {resp.removeprefix('ERR ').strip() or 'no answer from orthrus'}",
           file=sys.stderr)
     return 1
 

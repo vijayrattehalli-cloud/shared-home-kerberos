@@ -1,7 +1,7 @@
 # lakeFS integration — Spark / S3A on lakeFS Enterprise
 
 How a Slurm job authenticates to **lakeFS Enterprise** over **S3A/Spark** when
-credentials come from [`krb-credd`](../README.md). Companion diagram:
+credentials come from [`orthrus`](../README.md). Companion diagram:
 [`docs/lakefs-s3a-architecture.svg`](lakefs-s3a-architecture.svg).
 
 > A **runnable reference** for the two new pieces (the credential broker and the
@@ -16,15 +16,15 @@ credentials come from [`krb-credd`](../README.md). Companion diagram:
 
 Spark reads/writes lakeFS data through **S3A** against the **lakeFS S3 gateway**,
 which authenticates with a **lakeFS access-key pair** (`access_key_id` +
-`secret_access_key`, S3 SigV4). krb-credd gives the job a **Kerberos service
+`secret_access_key`, S3 SigV4). orthrus gives the job a **Kerberos service
 ticket**, not a lakeFS key, and lakeFS has **no native Kerberos/SPNEGO**. So a
 small bridge turns "the job holds a Kerberos ticket for *jdoe*" into "the job
 holds a short-lived lakeFS key for *jdoe*."
 
-A key consequence of the krb-credd design matters here: the job's cache holds
+A key consequence of the orthrus design matters here: the job's cache holds
 **only pre-minted service tickets, no TGT**. So **every** service the job
-authenticates to must have its SPN in krb-credd's `delegate_targets` — including
-the broker below. The job cannot obtain a ticket on the fly; krb-credd must have
+authenticates to must have its SPN in orthrus's `delegate_targets` — including
+the broker below. The job cannot obtain a ticket on the fly; orthrus must have
 minted it already.
 
 ---
@@ -33,29 +33,29 @@ minted it already.
 
 | Component | New? | Role |
 |---|---|---|
-| **krb-credd** | existing | Mints the job a service ticket for the broker SPN into `$HOME/.krb5/krb5cc_hpc` (present on every node). |
+| **orthrus** | existing | Mints the job a service ticket for the broker SPN into `$HOME/.krb5/krb5cc_hpc` (present on every node). |
 | **lakeFS credential broker** | **new** | SPNEGO endpoint (`mod_auth_gssapi`). Verifies the Kerberos identity, maps principal → lakeFS user, mints a **short-lived lakeFS access key** via the lakeFS Enterprise Auth API, returns `{id, secret, expiry}`. |
 | **S3A credentials provider** | **new** | Runs on each Spark executor. Calls the broker over SPNEGO (using `KRB5CCNAME`), caches the lakeFS key, refreshes before expiry. |
 | **lakeFS Enterprise + S3 gateway + object store** | existing | Serve the data; RBAC applies the mapped user's policies. |
 
 ---
 
-## 3. AD / krb-credd setup (one-time)
+## 3. AD / orthrus setup (one-time)
 
 1. Register an SPN for the broker, e.g. `HTTP/lakefs-sts.corp.example.mil` on a
    dedicated AD service account.
 2. Add that SPN to the broker account's `msDS-AllowedToDelegateTo` **and** to
-   krb-credd's `delegate_targets` in `credd.conf`:
+   orthrus's `delegate_targets` in `credd.conf`:
    ```ini
    delegate_targets = hive/hiveserver2.corp.example.mil@CORP.EXAMPLE.MIL \
                       hdfs/namenode.corp.example.mil@CORP.EXAMPLE.MIL \
                       HTTP/lakefs-sts.corp.example.mil@CORP.EXAMPLE.MIL
    ```
-   krb-credd now mints that `HTTP/lakefs-sts` service ticket into the shared-home
+   orthrus now mints that `HTTP/lakefs-sts` service ticket into the shared-home
    cache for every enrolled user (no restart for the AD change; restart the
    daemon to pick up the new `delegate_targets`).
 3. The broker host holds a **lakeFS admin credential** (to mint keys) — one
-   controlled standing secret, HSM/secret-store backed, exactly like krb-credd's
+   controlled standing secret, HSM/secret-store backed, exactly like orthrus's
    broker keytab. Scope its lakeFS policy to credential creation if your RBAC
    allows.
 
@@ -64,7 +64,7 @@ minted it already.
 ## 4. End-to-end flow
 
 ```
-1. krb-credd  → shared-home:  HTTP/lakefs-sts service ticket (pre-minted; no TGT)
+1. orthrus  → shared-home:  HTTP/lakefs-sts service ticket (pre-minted; no TGT)
 2. Spark executor (as the user) reads KRB5CCNAME → the cached service ticket
 3. executor  → broker:        SPNEGO  (Authorization: Negotiate <ticket>)
 4. broker    → lakeFS Auth API: mint a SHORT-LIVED access key for the mapped user
@@ -109,7 +109,7 @@ public class LakeFSKerberosCredentialProvider implements AWSCredentialsProvider 
   public AWSCredentials getCredentials() {
     if (cached != null && Instant.now().isBefore(expiresAt.minusSeconds(60)))
       return cached;                                   // still fresh
-    // SPNEGO GET to the broker, using the FILE ccache krb-credd installed.
+    // SPNEGO GET to the broker, using the FILE ccache orthrus installed.
     // The ccache has NO TGT, only the pre-minted HTTP/lakefs-sts service
     // ticket, so GSSAPI must target exactly that SPN (watch host canon.).
     HttpURLConnection c = spnegoConnect(brokerUrl, brokerSpn); // Negotiate
@@ -125,7 +125,7 @@ public class LakeFSKerberosCredentialProvider implements AWSCredentialsProvider 
 JVM SPNEGO reads the native FILE ccache via the Krb5 login module with
 `useTicketCache=true` (or the default `KRB5CCNAME`). Since the cache holds only
 the service ticket (no TGT), the provider must request **exactly** the
-`HTTP/lakefs-sts…` SPN krb-credd minted — GSSAPI cannot fetch a different one.
+`HTTP/lakefs-sts…` SPN orthrus minted — GSSAPI cannot fetch a different one.
 
 > **Simpler fallback (not recommended for long jobs):** the driver fetches one
 > key from the broker and sets `fs.s3a.access.key`/`secret.key` in the job conf.
@@ -148,7 +148,7 @@ whether it returns S3-gateway-usable keys against current lakeFS docs.
 
 - **One controlled secret, not N:** the broker's lakeFS admin credential is the
   only standing secret added — HSM/secret-store it, scope its RBAC to credential
-  creation, monitor it. Same philosophy as krb-credd's broker keytab.
+  creation, monitor it. Same philosophy as orthrus's broker keytab.
 - **Short-lived keys:** mint with the shortest practical TTL; authorization is
   the mapped lakeFS user's RBAC (branch/repo policies), so a leaked key is
   bounded in both time and scope.

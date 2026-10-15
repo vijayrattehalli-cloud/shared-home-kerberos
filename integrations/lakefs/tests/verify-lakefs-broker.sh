@@ -111,7 +111,7 @@ kadmin.local -q "ktadd -k $R/jdoe.keytab jdoe" >/dev/null 2>&1
 kadmin.local -q "addprinc -randkey HTTP/$Hn" >/dev/null 2>&1
 kadmin.local -q "ktadd -k $R/http.keytab HTTP/$Hn" >/dev/null 2>&1
 krb5kdc -n -r $REALM >/dev/null 2>&1 & PIDS+=($!)
-# jdoe obtains a ticket (stands in for the krb-credd-minted HTTP/<host> ticket)
+# jdoe obtains a ticket (stands in for the orthrus-minted HTTP/<host> ticket)
 for i in $(seq 1 30); do kinit -k -t "$R/jdoe.keytab" -c "$R/jdoe.cc" jdoe >/dev/null 2>&1 && break; sleep 0.3; done
 
 # the broker's HTTP/<host> acceptor:

@@ -9,7 +9,11 @@ Directory Kerberos credentials** on login nodes and on **every compute node of a
 Slurm job**, including **Hive** access — with the fewest moving parts, and
 **without a standing secret per user**.
 
-> **The idea in one line:** **`krb-credd` — a Kerberos client broker (root)** —
+> **Name:** the broker daemon is **`orthrus`** (formerly `krb-credd`), after the
+> two-headed brother of Kerberos: a smaller guard for a narrower gate. It hands
+> out service tickets to a short allow-list, never a full TGT.
+
+> **The idea in one line:** **`orthrus` — a Kerberos client broker (root)** —
 > holds **one** broker service-account keytab and uses **Kerberos constrained
 > delegation (S4U2Self + S4U2Proxy)** to mint each user's backend **service
 > tickets**, writing them into the user's home directory on the **shared
@@ -17,7 +21,7 @@ Slurm job**, including **Hive** access — with the fewest moving parts, and
 > TaskProlog points `KRB5CCNAME` at the cache. No SPANK plugin, no KCM, no
 > node-side daemon, and no per-user keytabs.
 
-`krb-credd` is a **client** of Active Directory — it runs **no KDC or realm of
+`orthrus` is a **client** of Active Directory — it runs **no KDC or realm of
 its own**. AD is the single KDC; the daemon authenticates with one service keytab
 and calls S4U as an ordinary MIT krb5 client. (It is deliberately **not** NVIDIA
 Sybil, which forges tickets from the KDC database and must run on an MIT/FreeIPA
@@ -27,10 +31,10 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design,
 [`AD-SETUP.md`](AD-SETUP.md) for the Active Directory side (broker account,
 constrained delegation, enrollment), and [`SECURITY.md`](SECURITY.md) for the
 threat model and hardening. Two diagrams:
-[`docs/krb-credd-system-architecture.svg`](docs/krb-credd-system-architecture.svg)
-is the end-to-end system (login → krb-credd → AD → shared-home → compute →
+[`docs/orthrus-system-architecture.svg`](docs/orthrus-system-architecture.svg)
+is the end-to-end system (login → orthrus → AD → shared-home → compute →
 backends, with the numbered flow), and
-[`docs/krb-credd-architecture.svg`](docs/krb-credd-architecture.svg) is the
+[`docs/orthrus-architecture.svg`](docs/orthrus-architecture.svg) is the
 cross-boundary view (the broker as an MIT krb5 **client** in the Linux boundary,
 AD's KDC in the Windows boundary, S4U over TCP 88 across the realm edge).
 
@@ -53,7 +57,7 @@ single broker account and impersonates each user's **real** AD identity via S4U.
 
 ```
 login/broker tier                         shared filesystem        compute fabric
-  krb-credd (root)
+  orthrus (root)
     ├ broker TGT ── kinit (1 keytab) ──▶ AD KDC
     └ per user: S4U2Self + S4U2Proxy ──▶ AD KDC  (msDS-AllowedToDelegateTo)
         writes as the user (setpriv)      $HOME/.krb5/krb5cc_hpc ◀─mnt─ cn001..cnNNN
@@ -73,16 +77,16 @@ login/broker tier                         shared filesystem        compute fabri
 | `src/krbhpc/_krb.py` | durations, `klist` parsing (UTC), error classification, MIT version check, and kinit/klist/**kvno (S4U)** wrappers run by absolute path |
 | `slurm/taskprolog.krb.sh` | the one line that exports `KRB5CCNAME` on every node |
 | `config/` | `credd.conf`, `krb5.conf`, `uidmap.conf`, `profile.d` hook |
-| `systemd/krb-credd.service` | run the daemon (sandboxed) |
+| `systemd/orthrus.service` | run the daemon (sandboxed) |
 | `tests/` | `verify-shared-home.sh` (end-to-end, full S4U path) + `test_krb_helpers.py` + `test_daemon.py` + `test_hardening.py` + `test_safety.py` (unit) |
 
 ## Install
 
 ```bash
-pip install .                 # console scripts: krb-credd, krb-get, krb-install-ccache
+pip install .                 # console scripts: orthrus, krb-get, krb-install-ccache
 pip install '.[hive]'         # + impyla for the Python Hive client
 # or run straight from the repo without installing:
-bin/krb-credd -c /etc/krb-hpc/credd.conf
+bin/orthrus -c /etc/krb-hpc/credd.conf
 ```
 
 Runtime system deps: `python3 >= 3.9`, MIT krb5 **1.19 or newer** client tools
@@ -105,9 +109,9 @@ install -D bin/krb-install-ccache /usr/local/libexec/krb-hpc/krb-install-ccache
 
 # 3. enroll a user: add 'jdoe jdoe' to uidmap.conf (real AD principal), and make
 #    sure jdoe is delegation-eligible and the backends are in delegate_targets.
-krb-credd --check --user jdoe      # validates config, tools, keytab, broker TGT, and
+orthrus --check --user jdoe      # validates config, tools, keytab, broker TGT, and
                                    # mints (without installing) jdoe's tickets
-systemctl enable --now krb-credd
+systemctl enable --now orthrus
 
 # 4. user logs in (profile.d runs krb-get) -> service tickets land in ~/.krb5
 eval "$(krb-get)"; klist           # shows hive/_HOST, hdfs/_HOST service tickets
@@ -185,17 +189,17 @@ If these are unacceptable, a node-local-KCM design is the alternative; this repo
 is the shared-home design only.
 
 For a comparison with a PKINIT-based alternative that gives users a full TGT
-(CRAFT), see [`docs/craft-vs-krb-credd-comparison.docx`](docs/craft-vs-krb-credd-comparison.docx).
-Step-by-step data flow diagrams for CRAFT modes 1 to 3 and krb-credd, written for a general technical reader, are in
-[`docs/craft-vs-krb-credd-data-flow-diagrams.docx`](docs/craft-vs-krb-credd-data-flow-diagrams.docx)
-(one-page overview: [`docs/craft-vs-krb-credd-overview.png`](docs/craft-vs-krb-credd-overview.png)).
+(CRAFT), see [`docs/craft-vs-orthrus-comparison.docx`](docs/craft-vs-orthrus-comparison.docx).
+Step-by-step data flow diagrams for CRAFT modes 1 to 3 and orthrus, written for a general technical reader, are in
+[`docs/craft-vs-orthrus-data-flow-diagrams.docx`](docs/craft-vs-orthrus-data-flow-diagrams.docx)
+(one-page overview: [`docs/craft-vs-orthrus-overview.png`](docs/craft-vs-orthrus-overview.png)).
 An implementation-cost and cyber-security-risk comparison, with a hostile-critic
-review, is in [`docs/craft-vs-krb-credd-cost-risk.md`](docs/craft-vs-krb-credd-cost-risk.md).
+review, is in [`docs/craft-vs-orthrus-cost-risk.md`](docs/craft-vs-orthrus-cost-risk.md).
 
 Diagrams of every function call in the daemon and client (start-up, `krb-get`
 requests, minting and validation, install, background refresh, `--check`) are in
-[`docs/krb-credd-call-graph.md`](docs/krb-credd-call-graph.md), with an
-interactive copy in `docs/krb-credd-call-graph.html`.
+[`docs/orthrus-call-graph.md`](docs/orthrus-call-graph.md), with an
+interactive copy in `docs/orthrus-call-graph.html`.
 
 ## Integrations
 

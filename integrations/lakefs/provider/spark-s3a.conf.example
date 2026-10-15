@@ -1,6 +1,6 @@
 # Spark / S3A configuration for lakeFS Enterprise with the Kerberos credentials
 # provider. Pass with --conf, or put (without the "spark.hadoop." prefix for the
-# fs.s3a.* lines) in core-site.xml. Jobs run on compute nodes where krb-credd's
+# fs.s3a.* lines) in core-site.xml. Jobs run on compute nodes where orthrus's
 # shared-home ticket is visible via KRB5CCNAME (set by the Slurm TaskProlog).
 
 # --- the lakeFS S3 gateway endpoint (NOT AWS) ---

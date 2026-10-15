@@ -1,4 +1,4 @@
-# Active Directory setup for shared-home krb-credd (constrained delegation)
+# Active Directory setup for shared-home orthrus (constrained delegation)
 
 This is the domain-side companion to [`ARCHITECTURE.md`](ARCHITECTURE.md) and
 [`SECURITY.md`](SECURITY.md). It answers two questions directly:
@@ -57,7 +57,7 @@ New-ADUser -Name $broker -SamAccountName $broker `
   -Path "OU=HPC-Service,OU=HPC,DC=corp,DC=example,DC=mil" `
   -AccountPassword (Read-Host -AsSecureString "pw") -Enabled $true `
   -KerberosEncryptionType AES256 `
-  -Description "HPC Kerberos broker (krb-credd); constrained delegation to DAE backends"
+  -Description "HPC Kerberos broker (orthrus); constrained delegation to DAE backends"
 
 # Register the broker's own SPN (it must be a service to use S4U):
 setspn -S hpc-broker/hpc-mgmt.corp.example.mil $broker

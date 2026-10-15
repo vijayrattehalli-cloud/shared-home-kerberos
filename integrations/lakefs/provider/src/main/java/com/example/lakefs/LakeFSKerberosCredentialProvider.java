@@ -4,7 +4,7 @@
  * SHORT-LIVED lakeFS access key, then feeds that key to S3A (SigV4).
  *
  * Runs on every Spark executor. It reads the Kerberos credentials from the
- * ambient native ccache (KRB5CCNAME -- the krb-credd shared-home cache), which
+ * ambient native ccache (KRB5CCNAME -- the orthrus shared-home cache), which
  * holds ONLY the pre-minted HTTP/<host> service ticket (no TGT). For that to
  * work the JVM must delegate GSSAPI to the OS (MIT) library:
  *

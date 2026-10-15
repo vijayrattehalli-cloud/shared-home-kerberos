@@ -8,10 +8,10 @@
 
 ## Install / run
 ```bash
-pip install .            # console scripts: krb-credd, krb-get, krb-install-ccache
+pip install .            # console scripts: orthrus, krb-get, krb-install-ccache
 pip install '.[hive]'    # + impyla for the Python Hive client
 # or run from the repo without installing:
-bin/krb-credd -c /etc/krb-hpc/credd.conf
+bin/orthrus -c /etc/krb-hpc/credd.conf
 ```
 
 ## Test

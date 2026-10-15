@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# verify-ad.sh -- acceptance test of krb-credd against a REAL Active Directory.
+# verify-ad.sh -- acceptance test of orthrus against a REAL Active Directory.
 #
 # Run as root on the broker/login node (hpclogin01 in the test-lab runbook)
 # after the runbook's sections 5-9 are done. It exercises the parts no local
@@ -64,7 +64,7 @@ warn(){ echo "WARN  $*"; NWARN=$((NWARN+1)); }
 info(){ echo "INFO  $*"; }
 section(){ echo; echo "--- $* ---"; }
 
-echo "krb-credd Active Directory acceptance test -- $(date -u '+%Y-%m-%d %H:%M UTC') on $(hostname -f 2>/dev/null || hostname)"
+echo "orthrus Active Directory acceptance test -- $(date -u '+%Y-%m-%d %H:%M UTC') on $(hostname -f 2>/dev/null || hostname)"
 echo "config: $CONF   repository: $REPO ($(grep -m1 '^version' "$REPO/pyproject.toml" 2>/dev/null))"
 
 # ---- read the daemon's own configuration (same parser, same defaults) ----
@@ -233,8 +233,8 @@ if [ -n "$NA" ]; then
 fi
 
 # ============================================================================
-section "5. krb-credd --check"
-CHK=$(command -v krb-credd || echo "$REPO/bin/krb-credd")
+section "5. orthrus --check"
+CHK=$(command -v orthrus || echo "$REPO/bin/orthrus")
 OUT=$("$CHK" -c "$CONF" --check --user "${USERS[0]}" 2>&1); RC=$?
 echo "$OUT" | sed 's/^/  /'
 [ $RC -eq 0 ] && pass "--check --user ${USERS[0]}: all checks passed" || fail "--check --user ${USERS[0]} reported failures (above)"
@@ -249,7 +249,7 @@ fi
 section "6. End to end through the running daemon"
 GET=$(command -v krb-get || echo "$REPO/bin/krb-get")
 if [ ! -S "$SOCK" ]; then
-  fail "daemon socket $SOCK not found (systemctl status krb-credd)"
+  fail "daemon socket $SOCK not found (systemctl status orthrus)"
 else
   for u in "${USERS[@]}"; do
     OUT=$(runuser -u "$u" -- env KRB_HPC_SOCKET="$SOCK" "$GET" 2>&1); RC=$?

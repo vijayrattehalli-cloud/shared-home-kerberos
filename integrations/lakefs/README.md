@@ -1,6 +1,6 @@
 # lakeFS integration — runnable reference
 
-A working reference for the two pieces that bridge a krb-credd Kerberos ticket
+A working reference for the two pieces that bridge a orthrus Kerberos ticket
 to **lakeFS Enterprise** over **Spark / S3A** (design: [`../../docs/lakefs-integration.md`](../../docs/lakefs-integration.md)):
 
 ```
@@ -15,7 +15,7 @@ tests/     verify-lakefs-broker.sh   — end-to-end test against a throwaway MIT
 ## The flow (recap)
 
 ```
-krb-credd  → shared-home:  HTTP/lakefs-sts service ticket (pre-minted; no TGT)
+orthrus  → shared-home:  HTTP/lakefs-sts service ticket (pre-minted; no TGT)
 Spark executor (S3A provider) → broker:  SPNEGO (Authorization: Negotiate)
 broker (behind mod_auth_gssapi) → lakeFS Auth API:  mint short-lived access key
 broker → executor:  { access_key_id, secret_access_key, expiry }
@@ -51,9 +51,9 @@ The one piece the harness does not run is Apache wiring Part 2's SPNEGO to Part
 
 ## Deploy
 
-1. **AD / krb-credd.** Register `HTTP/lakefs-sts.<domain>` on a service account;
+1. **AD / orthrus.** Register `HTTP/lakefs-sts.<domain>` on a service account;
    add that SPN to the broker account's `msDS-AllowedToDelegateTo` **and** to
-   krb-credd's `delegate_targets`. krb-credd then mints that ticket into
+   orthrus's `delegate_targets`. orthrus then mints that ticket into
    shared-home for every enrolled user.
 2. **Broker host (next to lakeFS).** Export its `HTTP/<host>` keytab; run Apache
    with `broker/apache-mod-auth-gssapi.conf`; run the Flask broker behind it:
